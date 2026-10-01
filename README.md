@@ -82,10 +82,23 @@ From the logs of real sessions on the current Echo build:
 
 ## Install
 
-### Release zip
+### Release zips
 
-`EchoXR-v<version>.zip` unpacks into Echo's `bin\win10` folder, the one with
-`echovr.exe`:
+There are three, so you can have EchoXR, hand tracking, or both:
+
+| Download | What's in it |
+| --- | --- |
+| `EchoXR-v<version>.zip` | both: Echo on SteamVR through OpenXR, and hand tracking |
+| `EchoXR-OpenXR-v<version>.zip` | EchoXR only: the launcher and the OpenXR translation layer, no hand tracking |
+| `EchoXR-Hands-v<version>.zip` | hand tracking only, for any way of running Echo (the Oculus/Meta runtime too) |
+
+The OpenXR-only package is the `EchoXR.exe` and `EchoXR\` part of the layout below; an
+OpenXR-only install updates from that package, so an update never adds hand tracking.
+The Hands package is the `EchoXR\Hands\` part: run `EchoXR\Hands\EchoXRHands.exe` and it
+installs the plugin and, if needed, the plugin loader first ([loader rules](#plugin-loader));
+`EchoXRHands.exe --setup` does only that.
+
+Each unpacks into Echo's `bin\win10` folder, the one with `echovr.exe`. The full one:
 
 ```
 bin\win10\
@@ -166,8 +179,16 @@ no other app to install.
 3. Copy `LibOVRPlatform64_1.dll` and `LibOVRPlatformImpl64_1.dll` from the Windows
    PC's `C:\Program Files\Oculus\Support\oculus-runtime\` into `bin/win10`.
    `pnsovr.dll` needs them to log in, and a Linux prefix has no Oculus folder.
-4. Set an active OpenXR runtime (SteamVR, Monado or WiVRn), then run
-   `bin/win10/EchoXR/echoxr-linux.sh`.
+4. Set an active OpenXR runtime (SteamVR, Monado or WiVRn). Proton also needs an
+   **OpenVR** runtime, registered in `~/.config/openvr/openvrpaths.vrpath`, before
+   it turns OpenXR on for a game. SteamVR registers itself. For Monado or WiVRn,
+   install [xrizer](https://github.com/Supreeeme/xrizer) or OpenComposite and
+   register it (WiVRn and Envision can do this for you).
+5. Start the VR server (SteamVR, `monado-service` or `wivrn-server`) and wake the
+   headset. Proton checks VR once, when Echo starts; if the server isn't up then,
+   VR stays off for that launch.
+6. Run `bin/win10/EchoXR/echoxr-linux.sh --check`. It reports what it found and
+   what's missing, without starting Echo. Then run it without `--check`.
 
 The VR path stays inside the game process:
 
@@ -184,6 +205,10 @@ choice to Proton instead of pinning SteamVR's Windows manifest. The script:
   newest `Proton N`. It refuses one without `wineopenxr`.
 - **Picks the runtime:** `XR_RUNTIME_JSON`, or your active one in
   `~/.config/openxr/1/active_runtime.json`.
+- **Checks OpenVR:** that a runtime is registered and has
+  `bin/linux64/vrclient.so`, the file Proton loads (`VR_OVERRIDE` picks another).
+  It warns when the VR server isn't running, or when OpenVR is SteamVR's but
+  OpenXR is another runtime, since SteamVR then has to run too.
 - **Uses its own prefix:** `~/.local/share/echoxr/prefix`.
 - **Sets Proton up:** the `STEAM_COMPAT_*` variables, plus
   `PRESSURE_VESSEL_IMPORT_OPENXR_1_RUNTIMES=1` so the container can see the
@@ -192,7 +217,10 @@ choice to Proton instead of pinning SteamVR's Windows manifest. The script:
   would otherwise load its own `dbgcore.dll` instead of the plugin loader.
 
 `ECHOXR_PROTON`, `ECHOXR_PREFIX`, `ECHOXR_NO_CONTAINER=1` and `ECHOXR_DEBUG=1`
-override the choices. `ECHOXR_DEBUG=1` also writes Proton and OpenXR loader logs.
+override the choices. `ECHOXR_DEBUG=1` also writes Proton and OpenXR loader logs
+to `~/.local/share/echoxr/logs/`. The script's own output goes to
+`~/.local/share/echoxr/echoxr-linux.log`, and when Echo exits it lists every log
+to send with a bug report.
 
 The approach follows [RiftLift](https://github.com/Villagers654/RiftLift), which
 runs Rift games the same way. No RiftLift code is used: it's GPL-3.0.
@@ -202,8 +230,9 @@ Nothing here has been run on Linux yet. The open questions are:
 - whether Echo's renderer works with Proton's `wineopenxr` (the Windows logs show
   a D3D12 device);
 - whether `pnsovr.dll` and the Platform SDK DLLs log in under Wine;
-- whether the finger bridge (`EchoXRHands.exe`, OpenVR) works. That needs SteamVR,
-  because Monado and WiVRn don't provide OpenVR.
+- whether the finger bridge (`EchoXRHands.exe`, OpenVR) works. It should on
+  SteamVR. On Monado or WiVRn it depends on xrizer or OpenComposite passing hand
+  skeletons through.
 
 ## Using it
 
@@ -344,7 +373,7 @@ Everything builds with MSVC (Visual Studio 2026 toolset).
 | `xr\build_xr.bat` | `xr\out\LibOVRRT64_1.dll`, `openxr_loader.dll` and `EchoXR.exe`. It needs three upstream checkouts plus a patch; [xr/README.md](xr/README.md) has the exact commits and commands |
 | `xr\build_launcher.bat` | just `xr\out\EchoXR.exe` (quick) |
 | `installer\build_installer.bat [--all]` | all of the above as needed, then `out\EchoXRSetup.exe` |
-| `python tools\make_release.py [--no-build]` | `out\release\EchoXR-v<VERSION>.zip` and `EchoXRSetup-v<VERSION>.exe` |
+| `python tools\make_release.py [--no-build]` | `out\release\`: `EchoXR-v<VERSION>.zip` (both), `EchoXR-OpenXR-v<VERSION>.zip`, `EchoXR-Hands-v<VERSION>.zip` and `EchoXRSetup-v<VERSION>.exe` |
 | `python tools\gen_logo.py` | the logo in `installer\logo\` (SVG, PNG, ICO) |
 
 The plugin loader is staged from the game install into

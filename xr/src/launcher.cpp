@@ -159,53 +159,6 @@ static int Fail(const std::wstring& msg, int code) {
     return code;
 }
 
-static bool SameFile(const std::wstring& a, const std::wstring& b) {
-    std::string x = echoxr::ReadAll(a);
-    return !x.empty() && x == echoxr::ReadAll(b);
-}
-
-// Release-zip layout: EchoXR\Hands\install\ carries the hand tracking plugin, its
-// default settings and the plugin loader. Each launch puts them into the game folder
-// (same loader rules as the installer), so unzipping a newer release updates them.
-// An installer-made install has no install\ folder, and this does nothing.
-static void SetupHands(const std::wstring& gameDir, const std::wstring& xrDir) {
-    std::wstring src = xrDir + L"Hands\\install\\", plugins = gameDir + L"\\plugins\\";
-    if (!echoxr::Exists(src + L"EchoXRHands.dll")) return;
-    std::string ours = echoxr::ReadAll(src + L"dbgcore.dll");
-    echoxr::LoaderState st = echoxr::ClassifyLoader(gameDir, ours.data(), ours.size());
-    if (st == echoxr::L_FOREIGN) {
-        Log(L"hand tracking: a dbgcore.dll that isn't a plugin loader is in the game folder -- "
-            L"left alone, so the hand tracking plugin isn't installed. Run EchoXRSetup.exe to replace it.");
-        return;
-    }
-    CreateDirectoryW(plugins.c_str(), nullptr);
-    if (st == echoxr::L_LEGACY) {
-        std::wstring legacy = gameDir + L"\\" + echoxr::kLegacyRel;
-        if (!MoveFileExW((gameDir + L"\\dbgcore.dll").c_str(), legacy.c_str(), MOVEFILE_REPLACE_EXISTING)) {
-            Log(L"hand tracking: couldn't move the old dbgcore.dll into plugins\\ (error %lu)", GetLastError());
-            return;
-        }
-        Log(L"hand tracking: moved the old dbgcore.dll to %ls", echoxr::kLegacyRel);
-    }
-    if (st == echoxr::L_MISSING || st == echoxr::L_LEGACY) {
-        DWORD e = echoxr::WriteAll(gameDir + L"\\dbgcore.dll", ours.data(), ours.size());
-        Log(e ? L"hand tracking: couldn't install the plugin loader (error %lu)" : L"hand tracking: installed the plugin loader (dbgcore.dll)", e);
-        if (e) return;
-    }
-    // pre-rename plugin: it would load next to the new one
-    if (DeleteFileW((plugins + L"HandTrackingValve.dll").c_str())) Log(L"hand tracking: removed the old HandTrackingValve.dll");
-    if (!echoxr::Exists(plugins + L"EchoXRHands.txt") && echoxr::Exists(plugins + L"handtracking_config.txt") &&
-        MoveFileExW((plugins + L"handtracking_config.txt").c_str(), (plugins + L"EchoXRHands.txt").c_str(), 0))
-        Log(L"hand tracking: kept your settings (handtracking_config.txt is now EchoXRHands.txt)");
-    if (!SameFile(src + L"EchoXRHands.dll", plugins + L"EchoXRHands.dll")) {
-        BOOL ok = CopyFileW((src + L"EchoXRHands.dll").c_str(), (plugins + L"EchoXRHands.dll").c_str(), FALSE);
-        Log(ok ? L"hand tracking: installed plugins\\EchoXRHands.dll" : L"hand tracking: couldn't copy EchoXRHands.dll (error %lu) -- is Echo already running?", GetLastError());
-    }
-    if (!echoxr::Exists(plugins + L"EchoXRHands.txt") &&
-        CopyFileW((src + L"EchoXRHands.txt").c_str(), (plugins + L"EchoXRHands.txt").c_str(), TRUE))
-        Log(L"hand tracking: installed default settings (plugins\\EchoXRHands.txt)");
-}
-
 int wmain(int argc, wchar_t** argv) {
     wchar_t self[MAX_PATH];
     GetModuleFileNameW(nullptr, self, MAX_PATH);
@@ -257,7 +210,7 @@ int wmain(int argc, wchar_t** argv) {
             return Fail(L"Couldn't create echovr_openxr.exe: " + err + L".", 4);
         Log(L"created %ls (patched copy of echovr.exe, file offset 0x%zx)", echoxr::kModdedExe, off);
     }
-    SetupHands(gameDir, xrDir);
+    echoxr::SetupHands(gameDir, xrDir + L"Hands\\install\\", Log);   // release zip: plugin + loader
     if (setupOnly) {
         Log(L"--setup-only: done, not launching");
         if (g_log) fclose(g_log);

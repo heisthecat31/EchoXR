@@ -6,6 +6,7 @@
 //   EchoXRHands.exe --set "Key = Value" [...]
 //                                          push live settings to the plugin
 //   EchoXRHands.exe --calibrate     recapture the open-hand reference
+//   EchoXRHands.exe --setup         install the plugin from install\ (hands-only package) and exit
 //
 // WHY THIS IS A SEPARATE PROCESS
 // ------------------------------
@@ -52,6 +53,7 @@
 #define OPENVR_INTERFACE_INTERNAL
 #include "openvr.h"
 #include "../plugin/htv_protocol.h"
+#include "../xr/src/echoxr_common.h"
 
 #pragma comment(lib, "ws2_32.lib")
 #pragma comment(lib, "user32.lib")
@@ -378,6 +380,34 @@ static std::string WriteManifest() {
     return ExeDir() + "htv_actions.json";   // whatever was shipped
 }
 
+// Hands-only package: EchoXR\Hands\install\ next to this exe carries the plugin, its
+// default settings and the plugin loader; put them into the game folder two levels up
+// (the same rules as EchoXR.exe and the installer). Nothing to do without install\.
+static void HandsLog(const wchar_t* fmt, ...) {
+    wchar_t buf[512];
+    va_list ap;
+    va_start(ap, fmt);
+    _vsnwprintf_s(buf, _TRUNCATE, fmt, ap);
+    va_end(ap);
+    printf("%ls\n", buf);
+}
+
+static bool SetupFromPackage() {
+    wchar_t self[MAX_PATH];
+    GetModuleFileNameW(nullptr, self, MAX_PATH);
+    std::wstring dir = self;
+    dir = dir.substr(0, dir.find_last_of(L"\\/") + 1);   // ...\EchoXR\Hands\ (with the backslash)
+    if (!echoxr::Exists(dir + L"install\\EchoXRHands.dll")) return false;
+    wchar_t game[MAX_PATH];
+    if (!GetFullPathNameW((dir + L"..\\..").c_str(), MAX_PATH, game, nullptr)) return false;
+    if (!echoxr::Exists(std::wstring(game) + L"\\echovr.exe")) {
+        printf("install\\ is here, but %ls isn't Echo VR's bin\\win10 -- unzip into the folder with echovr.exe\n", game);
+        return false;
+    }
+    echoxr::SetupHands(game, dir + L"install\\", HandsLog);
+    return true;
+}
+
 int main(int argc, char** argv) {
     bool print = false;
     std::string text;
@@ -386,11 +416,13 @@ int main(int argc, char** argv) {
         if (a == "--print") print = true;
         else if (a == "--calibrate") text += "Calibrate = 1\n";
         else if (a == "--ping") text += "Ping";
+        else if (a == "--setup") return SetupFromPackage() ? 0 : 1;
         else if (a == "--set" && i + 1 < argc) { text += argv[++i]; text += "\n"; }
         else { printf("unknown argument: %s\n", a.c_str()); return 2; }
     }
     if (!text.empty()) return SendText(text);
 
+    SetupFromPackage();   // hands-only package: install/update the plugin first
     if (!OpenSocket()) { printf("socket failed\n"); return 1; }
     LoadSettings();
     std::string manifest = WriteManifest();

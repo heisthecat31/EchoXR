@@ -60,3 +60,5 @@ dkms.conf
 /xr/Revive/
 /xr/OpenXR-SDK/
 /xr/ovr_sdk_pc/
+# MCP config with a private access token (ReVault) -- never commit
+/.mcp.json
