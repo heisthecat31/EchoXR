@@ -129,7 +129,7 @@ git clone https://github.com/KhronosGroup/OpenXR-SDK OpenXR-SDK
 git -C OpenXR-SDK checkout f2448a8797c85814aa892efc1ab8707900fbcc78
 ```
 
-`patches/revive-echoxr.patch` holds the three SteamVR changes described below, plus
+`patches/revive-echoxr.patch` holds the SteamVR changes described below, plus
 the `runtime.log` hook in `Common.h`.
 
 The Oculus SDK has to be **1.55 or newer**. Echo asks for SDK minor version 55,
@@ -173,6 +173,18 @@ failed, and fixed in this copy of Revive:
    Echo-specific setting now also applies to the `echovr_openxr.exe` filename
    (`Runtime.cpp`, `Session.cpp`).
 
+One more change wasn't a failed call:
+
+4. **Controllers that didn't track (Steam Frame).** On SteamVR, Revive suggested
+   controller bindings for the Valve Index profile only, and left SteamVR to
+   convert them for every other controller. SteamVR doesn't convert them for the
+   Steam Frame's controllers, so those had no binding: no pose, no buttons, and
+   Echo saw them as not tracked. Revive now also suggests the Oculus Touch
+   profile, which nearly every OpenXR game uses and new controllers support, and
+   SteamVR picks whichever fits the controllers best. Index controllers still
+   use the Index profile (`InputManager.cpp`). The profile SteamVR chose for each
+   hand goes into `runtime.log`; `none` means that hand has no binding.
+
 Result on SteamVR/OpenXR 2.17.10: Echo runs, with **no** failed OpenXR calls for
 the whole session.
 
@@ -183,7 +195,7 @@ the whole session.
 | Log | What's in it |
 | --- | --- |
 | `bin\win10\EchoXR\launcher.log` | which runtime was chosen, what was launched, Echo's exit code |
-| `bin\win10\EchoXR\runtime.log` | the OpenXR runtime's name and version, enabled extensions, the SDK version Echo asked for, and **every failed OpenXR call** with its source line |
+| `bin\win10\EchoXR\runtime.log` | the OpenXR runtime's name and version, enabled extensions, the SDK version Echo asked for, the controller profile bound to each hand, and **every failed OpenXR call** with its source line |
 | `_local\r14logs\*.log` | Echo's own log ("Initializing OVR session…" and any session error) |
 | `Steam\logs\vrserver.txt` | SteamVR's side of the connection |
 

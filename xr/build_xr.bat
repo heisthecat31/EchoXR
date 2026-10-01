@@ -26,7 +26,7 @@ cl.exe /nologo /LD /MD /O2 /EHsc /std:c++17 /W1 /MP /FIchrono %INC% %DEF% /Foobj
   /link %XRB%\src\loader\openxr_loader.lib ..\third_party\detours.lib Ws2_32.lib opengl32.lib d3d11.lib d3d12.lib dxgi.lib dxguid.lib dsound.lib Winmm.lib Shlwapi.lib Pathcch.lib user32.lib advapi32.lib ole32.lib
 if %ERRORLEVEL% neq 0 exit /b %ERRORLEVEL%
 copy /Y %XRB%\src\loader\openxr_loader.dll out\ >nul
-call build_launcher.bat
+call "%~dp0build_launcher.bat"
 if %ERRORLEVEL% neq 0 exit /b %ERRORLEVEL%
 cd /d "%~dp0"
 del /q out\*.exp out\*.lib 2>nul
