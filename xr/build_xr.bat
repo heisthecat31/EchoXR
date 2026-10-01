@@ -26,8 +26,22 @@ cl.exe /nologo /LD /MD /O2 /EHsc /std:c++17 /W1 /MP /FIchrono %INC% %DEF% /Foobj
   /link %XRB%\src\loader\openxr_loader.lib ..\third_party\detours.lib Ws2_32.lib opengl32.lib d3d11.lib d3d12.lib dxgi.lib dxguid.lib dsound.lib Winmm.lib Shlwapi.lib Pathcch.lib user32.lib advapi32.lib ole32.lib
 if %ERRORLEVEL% neq 0 exit /b %ERRORLEVEL%
 copy /Y %XRB%\src\loader\openxr_loader.dll out\ >nul
+
+rem third-party notices shipped with EchoXR
+> out\THIRD_PARTY_NOTICES.txt (
+    echo EchoXR third-party notices
+    echo.
+    echo ==== Revive / ReviveXR ^(LibreVR^) -- MIT License ====
+    type Revive\LICENSE
+    echo.
+    echo ==== OpenXR SDK and loader ^(The Khronos Group^) -- Apache License 2.0 ====
+    type OpenXR-SDK\LICENSES\Apache-2.0.txt
+    echo.
+    echo ==== Microsoft Detours -- MIT License ====
+    echo Copyright ^(c^) Microsoft Corporation. Licensed under the MIT License.
+)
 call "%~dp0build_launcher.bat"
 if %ERRORLEVEL% neq 0 exit /b %ERRORLEVEL%
 cd /d "%~dp0"
 del /q out\*.exp out\*.lib 2>nul
-echo Built out\LibOVRRT64_1.dll and out\EchoXR.exe
+echo Built out\LibOVRRT64_1.dll, out\openxr_loader.dll and out\EchoXR.exe

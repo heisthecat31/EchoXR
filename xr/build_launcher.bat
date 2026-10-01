@@ -1,5 +1,5 @@
 @echo off
-rem Builds out\EchoXR.exe, the launcher (quick). build_xr.bat and the installer build call this.
+rem Builds out\EchoXR.exe, the launcher (quick). build_xr.bat calls this.
 setlocal
 if not defined VSCMD_ARG_TGT_ARCH call "J:\vs2026\VC\Auxiliary\Build\vcvars64.bat" >nul
 cd /d "%~dp0"

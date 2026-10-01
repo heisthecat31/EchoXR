@@ -2,8 +2,8 @@
 // EchoXR self-update, used by the launcher (launcher.cpp).
 //
 // At most once every 20 hours (EchoXR\update_check.txt), EchoXR.exe asks GitHub for
-// the latest release of heisthecat31/EchoXR. If its tag is newer than this build
-// (ECHOXR_VERSION, from VERSION) and it carries an EchoXR-v<version>.zip, the
+// the latest release of EchoTools/EchoXR. If its tag is newer than this build
+// (ECHOXR_VERSION, from VERSION) and it carries an EchoXR-OpenXR-v<version>.zip, the
 // player is asked. On yes: the zip is downloaded to %TEMP%, unpacked with Windows'
 // own tar.exe, checked (EchoXR.exe + EchoXR\LibOVRRT64_1.dll at its root), and
 // copied over bin\win10. The running EchoXR.exe can't be overwritten but can be
@@ -25,8 +25,8 @@
 namespace updater {
 
 static const wchar_t* kHost = L"api.github.com";
-static const wchar_t* kPath = L"/repos/heisthecat31/EchoXR/releases/latest";
-static const char*    kAssetPrefix = "https://github.com/heisthecat31/EchoXR/releases/download/";
+static const wchar_t* kPath = L"/repos/EchoTools/EchoXR/releases/latest";
+static const char*    kAssetPrefix = "https://github.com/EchoTools/EchoXR/releases/download/";
 
 typedef void (*LogFn)(const wchar_t* fmt, ...);
 
@@ -174,21 +174,16 @@ inline bool CheckAndUpdate(const std::wstring& dir, const std::wstring& xrDir, b
     if (tag.empty()) { log(L"update: no release information"); return false; }
     if (!Newer(tag, ECHOXR_VERSION)) { log(L"update: up to date (%hs, latest %hs)", ECHOXR_VERSION, tag.c_str()); return false; }
 
-    // The same package as this install: EchoXR-v* (EchoXR and hand tracking) when the finger
-    // bridge is here, else EchoXR-OpenXR-v* (the translation layer only), so an update never
-    // adds hand tracking someone left out. Releases before the split only have EchoXR-v*.
-    bool hands = GetFileAttributesW((xrDir + L"Hands\\EchoXRHands.exe").c_str()) != INVALID_FILE_ATTRIBUTES;
-    const char* want[2] = { hands ? "/EchoXR-v" : "/EchoXR-OpenXR-v", "/EchoXR-v" };
+    // The release's EchoXR-OpenXR-v* zip: the translation layer and this launcher.
     std::string zipUrl;
-    for (int pass = 0; pass < (hands ? 1 : 2) && zipUrl.empty(); ++pass)
-        for (size_t pos = 0;;) {
-            size_t at = 0;
-            std::string u = JsonString(json, "browser_download_url", pos, &at);
-            if (u.empty()) break;
-            pos = at;
-            if (u.compare(0, strlen(kAssetPrefix), kAssetPrefix) == 0 && u.find(want[pass]) != std::string::npos &&
-                u.size() > 4 && u.compare(u.size() - 4, 4, ".zip") == 0) { zipUrl = u; break; }
-        }
+    for (size_t pos = 0;;) {
+        size_t at = 0;
+        std::string u = JsonString(json, "browser_download_url", pos, &at);
+        if (u.empty()) break;
+        pos = at;
+        if (u.compare(0, strlen(kAssetPrefix), kAssetPrefix) == 0 && u.find("/EchoXR-OpenXR-v") != std::string::npos &&
+            u.size() > 4 && u.compare(u.size() - 4, 4, ".zip") == 0) { zipUrl = u; break; }
+    }
     if (zipUrl.empty()) { log(L"update: %hs has no EchoXR zip", tag.c_str()); return false; }
     log(L"update: %hs is available (this is %hs)", tag.c_str(), ECHOXR_VERSION);
 

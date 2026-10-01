@@ -1,8 +1,6 @@
-"""Generates the EchoXR logo: installer/logo/echoxr.svg, echoxr.png (512 px) and
+"""Generates the EchoXR logo: logo/echoxr.svg, echoxr.png (512 px) and
 echoxr.ico (16-256 px). An "E" sending out two echo arcs, on a blue-violet squircle.
-
-The same geometry is drawn at runtime by DrawLogo() in installer/setup.cpp; keep the
-two in step. Coordinates are on a 256-unit canvas.
+Coordinates are on a 256-unit canvas.
 
     python tools/gen_logo.py
 """
@@ -10,7 +8,7 @@ import math
 import os
 from PIL import Image, ImageDraw
 
-OUT = os.path.join(os.path.dirname(__file__), "..", "installer", "logo")
+OUT = os.path.join(os.path.dirname(__file__), "..", "logo")
 
 BG_A, BG_B = (0x4F, 0x7B, 0xFF), (0x9A, 0x5C, 0xFF)   # top-left -> bottom-right
 RADIUS = 60

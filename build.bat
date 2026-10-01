@@ -15,29 +15,8 @@ if not defined VARS_BAT (
 if not defined VSCMD_ARG_TGT_ARCH call "%VARS_BAT%" >nul
 
 cd /d "%~dp0"
-if not exist out mkdir out
-if not exist obj mkdir obj
-
-echo Building EchoXRHands.dll (plugin)...
-cl.exe /nologo /LD /MD /O2 /EHa /W3 /Ithird_party /Foobj\ /Fe"out\EchoXRHands.dll" plugin\handtracking.cpp plugin\htv_net.cpp third_party\detours.lib ws2_32.lib winhttp.lib user32.lib
+rem EchoXR: the OpenXR runtime (LibOVRRT64_1.dll), the OpenXR loader and the launcher
+call xr\build_xr.bat
 if %ERRORLEVEL% neq 0 exit /b %ERRORLEVEL%
-
-echo Building EchoXRHands.exe (finger bridge)...
-rc.exe /nologo /fo obj\bridge.res bridge\bridge.rc
-if %ERRORLEVEL% neq 0 exit /b %ERRORLEVEL%
-cl.exe /nologo /MD /O2 /EHsc /W3 /Ithird_party /Foobj\ /Fe"out\EchoXRHands.exe" bridge\bridge.cpp obj\bridge.res ws2_32.lib
-if %ERRORLEVEL% neq 0 exit /b %ERRORLEVEL%
-
-echo Building EchoXRSettings.exe (settings window)...
-rc.exe /nologo /fo obj\settings.res settings\settings.rc
-if %ERRORLEVEL% neq 0 exit /b %ERRORLEVEL%
-cl.exe /nologo /MT /O2 /EHsc /W3 /utf-8 /DUNICODE /D_UNICODE /Foobj\ /Fe"out\EchoXRSettings.exe" settings\settings.cpp obj\settings.res ^
-  /link /SUBSYSTEM:WINDOWS user32.lib gdi32.lib gdiplus.lib dwmapi.lib shell32.lib ole32.lib ws2_32.lib
-if %ERRORLEVEL% neq 0 exit /b %ERRORLEVEL%
-
-copy /Y EchoXRHands.txt out\ >nul
-copy /Y bridge\htv_actions.json out\ >nul
-copy /Y bridge\htv_bindings_knuckles.json out\ >nul
-del /q out\*.exp out\*.lib 2>nul
 echo.
-echo Built into %~dp0out
+echo Built into %~dp0xr\out

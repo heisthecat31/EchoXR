@@ -168,7 +168,8 @@ export SteamAppId=0 SteamGameId=0
 export XR_RUNTIME_JSON="$runtime"
 export PRESSURE_VESSEL_IMPORT_OPENXR_1_RUNTIMES=1          # let the container see the runtime
 export PRESSURE_VESSEL_FILESYSTEMS_RW="$game_root:$prefix${PRESSURE_VESSEL_FILESYSTEMS_RW:+:$PRESSURE_VESSEL_FILESYSTEMS_RW}"
-# dbgcore.dll in bin/win10 is the plugin loader; Wine would use its own builtin one
+# dbgcore.dll in bin/win10 is the game's plugin loader (the community update ships it);
+# Wine would use its own builtin one
 export WINEDLLOVERRIDES="dbgcore=n,b${WINEDLLOVERRIDES:+;$WINEDLLOVERRIDES}"
 if [ "${ECHOXR_DEBUG:-0}" != 0 ]; then
     mkdir -p "$data/logs"
@@ -205,6 +206,5 @@ say "Echo exited ($rc). Logs:"
 say "  $log"
 say "  $echo_dir/EchoXR/launcher.log"
 say "  $echo_dir/EchoXR/runtime.log"
-say "  $echo_dir/plugins/EchoXRHands.log"
 [ "${ECHOXR_DEBUG:-0}" != 0 ] && say "  $data/logs/ (Proton, OpenXR loader)"
 exit "$rc"

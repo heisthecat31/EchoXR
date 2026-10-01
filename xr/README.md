@@ -5,7 +5,7 @@ written against Oculus's LibOVR API. EchoXR answers those calls with an OpenXR
 implementation, so the game renders and tracks through SteamVR's OpenXR runtime,
 or any other OpenXR runtime you choose.
 
-It ships as part of the EchoXR release zip and `EchoXRSetup.exe` (see the
+It ships as the `EchoXR-OpenXR-v<version>.zip` release (see the
 [top-level README](../README.md)).
 
 ---
@@ -19,9 +19,8 @@ check always passes. The function at RVA `0x1365bd0` starts with
 `mov eax,1 ; ret` (6 bytes) instead of its prologue. `echovr.exe` itself is
 never changed, so normal launches are unaffected.
 
-The copy is made on the player's own machine: by `EchoXR.exe` on its first
-launch, or by `EchoXRSetup.exe` as part of the EchoXR component. Both use
-`src/echoxr_common.h`, which first checks the 14 prologue bytes
+The copy is made on the player's own machine, by `EchoXR.exe` on its first
+launch. It uses `src/echoxr_common.h`, which first checks the 14 prologue bytes
 (`48 89 5C 24 18 48 89 74 24 20 55 57 41 56`); on any other game build it refuses
 and leaves nothing behind. No game binary ships with this project. Uninstalling
 EchoXR deletes the copy.
@@ -35,7 +34,7 @@ EchoXR deletes the copy.
 | `LibOVRRT64_1.dll` | `bin\win10\EchoXR\` | The runtime. Revive's OpenXR backend ("ReviveXR", MIT), built under the Oculus runtime's DLL name. It implements every one of the 93 `ovr_*` functions Echo uses (125 in total) on top of OpenXR. |
 | `openxr_loader.dll` | `bin\win10\EchoXR\` | The official Khronos OpenXR loader, built from source (OpenXR SDK 1.1.63). |
 | `EchoXR.exe` | `bin\win10\` | The launcher, described below. |
-| `echovr_openxr.exe` | `bin\win10\` | The patched copy of `echovr.exe`, made on your machine by the launcher or the installer (see above). |
+| `echovr_openxr.exe` | `bin\win10\` | The patched copy of `echovr.exe`, made on your machine by the launcher (see above). |
 
 The runtime lives in its own `EchoXR\` subfolder on purpose. Echo searches its
 own folder first for its runtime, so a runtime placed there would take over
@@ -48,17 +47,15 @@ Source: `src/launcher.cpp`. It sets up one launch, starts Echo and waits for it
 to exit:
 
 0. **Checks for an update** (`src/updater.h`), at most once every 20 hours: the
-   latest GitHub release of `heisthecat31/EchoXR`, compared with the version built
-   in from `VERSION`. A newer `EchoXR-v*.zip` is offered, downloaded, checked,
+   latest GitHub release of `EchoTools/EchoXR`, compared with the version built
+   in from `VERSION`. A newer `EchoXR-OpenXR-v*.zip` is offered, downloaded, checked,
    unpacked over the install with Windows' `tar.exe`, and started in place of
    the running launcher, which is renamed to `EchoXR.exe.old` rather than
    overwritten. `CheckForUpdates = 0` in `EchoXR\echoxr.ini` turns it off, and
    `--check-update` checks now.
 1. **Checks and sets up.** `EchoXR.exe` has to be next to `echovr.exe`, and
    `EchoXR\LibOVRRT64_1.dll` has to exist; otherwise it says so in a message box.
-   If `echovr_openxr.exe` is missing, it makes it (see above). From a release
-   zip, it also installs or updates the hand tracking plugin and plugin loader from
-   `EchoXR\Hands\install\`, following the same loader rules as the installer.
+   If `echovr_openxr.exe` is missing, it makes it (see above).
    `--setup-only` stops here.
 2. **Chooses the VR runtime.** It finds SteamVR through Steam's own registry
    (`%LOCALAPPDATA%\openvr\openvrpaths.vrpath`). It then points this launch at
@@ -76,11 +73,7 @@ to exit:
    folder to `PATH` so `openxr_loader.dll` is found.
 5. **Starts Echo.** That's `echovr_openxr.exe` by default, or `--exe <name>` for
    another executable in the same folder. Any other arguments are passed to Echo.
-6. **Starts hand tracking**, if `EchoXR\echoxr.ini` has `AutoStartHands = 1` (the
-   installer asks; without an ini, the launcher creates one with `1`). It runs `EchoXR\Hands\EchoXRHands.exe --print` in its own
-   minimised console for as long as Echo runs, restarts it if it exits (at most 20
-   times, 5 seconds apart), and closes it when Echo exits. If the bridge is already
-   running, the launcher leaves it alone.
+   It waits until Echo exits.
 
 The environment settings apply only to the Echo process the launcher starts;
 nothing system-wide is changed. It logs to `bin\win10\EchoXR\launcher.log`.
@@ -93,7 +86,7 @@ nothing system-wide is changed. It logs to `bin\win10\EchoXR\launcher.log`.
    it. It doesn't have to be set as the system OpenXR runtime; the launcher picks
    SteamVR for each launch on its own.
 2. **Unzip the release** into the Echo install's `bin\win10` folder, so that
-   `EchoXR.exe` sits next to `echovr.exe`, or run `EchoXRSetup.exe`.
+   `EchoXR.exe` sits next to `echovr.exe`.
 3. **Run** `bin\win10\EchoXR.exe` with SteamVR running.
 
 The Oculus login/platform side is separate from all of this. Echo's online

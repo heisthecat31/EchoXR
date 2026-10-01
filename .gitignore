@@ -52,8 +52,6 @@ Mkfile.old
 dkms.conf
 /friend_package
 /out
-/installer/stage
-/installer/obj
 /obj
 /xr/obj
 # upstream checkouts (see xr/README.md "Building"; our Revive changes are in xr/patches/)

@@ -1,6 +1,6 @@
 #pragma once
-// Shared by the EchoXR launcher (xr/src/launcher.cpp) and the installer (installer/setup.cpp):
-// file helpers, the echovr_openxr.exe patch, and the dbgcore.dll plugin-loader rules.
+// Used by the EchoXR launcher (xr/src/launcher.cpp) and its updater (xr/src/updater.h):
+// file helpers and the echovr_openxr.exe patch.
 #include <windows.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -96,90 +96,6 @@ inline bool MakeOpenXRExe(const std::wstring& dir, std::wstring& err, size_t* of
     }
     if (offOut) *offOut = off;
     return true;
-}
-
-// ---------------------------------------------------------------------------
-// Plugin loader (dbgcore.dll) rules:
-//   none                             -> install the loader
-//   the old 45 KB one (by hash)      -> install the loader; the old one moves to
-//                                       plugins\dbgcore_legacy.dll and loads as a plugin
-//   anything else + plugins\ exists  -> a working loader: kept, plugin goes in plugins\
-//   anything else, no plugins\       -> not a plugin loader: replaced only when asked,
-//                                       old one saved as dbgcore.dll.bak
-// ---------------------------------------------------------------------------
-static const size_t   kLegacySize = 45568;
-static const uint64_t kLegacyHash = 0xbba858556700da1aull;   // FNV-1a 64
-static const wchar_t* kLegacyRel  = L"plugins\\dbgcore_legacy.dll";
-
-inline uint64_t Fnv1a(const std::string& s) {
-    uint64_t h = 0xcbf29ce484222325ull;
-    for (unsigned char c : s) h = (h ^ c) * 0x100000001b3ull;
-    return h;
-}
-
-enum LoaderState { L_MISSING, L_OURS, L_LEGACY, L_OTHER_LOADER, L_FOREIGN };
-
-// ours = the loader this build ships, to recognise it byte for byte.
-inline LoaderState ClassifyLoader(const std::wstring& dir, const void* ours, size_t oursSize) {
-    std::string have = ReadAll(dir + L"\\dbgcore.dll");
-    if (have.empty()) return L_MISSING;
-    if (ours && have.size() == oursSize && !memcmp(have.data(), ours, oursSize)) return L_OURS;
-    if (have.size() == kLegacySize && Fnv1a(have) == kLegacyHash) return L_LEGACY;
-    if (IsDir(dir + L"\\plugins")) return L_OTHER_LOADER;   // a loader is already set up here
-    // a plugin loader names the folder it scans
-    return have.find("plugins") != std::string::npos ? L_OTHER_LOADER : L_FOREIGN;
-}
-
-// Whether the loader gets installed without asking.
-inline bool LoaderWanted(LoaderState st) { return st == L_MISSING || st == L_LEGACY; }
-
-inline bool SameFile(const std::wstring& a, const std::wstring& b) {
-    std::string x = ReadAll(a);
-    return !x.empty() && x == ReadAll(b);
-}
-
-// Release-zip layout: <install> (EchoXR\Hands\install\) carries the hand tracking plugin,
-// its default settings and the plugin loader. This puts them into the game folder with
-// the installer's loader rules, so unzipping a newer release updates them. EchoXR.exe runs
-// it on each launch and, for the hands-only package, EchoXRHands.exe on each start. An
-// installer-made install has no install\ folder, and this does nothing.
-// `install` ends in a backslash; `log` is printf-style with wide strings.
-inline void SetupHands(const std::wstring& gameDir, const std::wstring& install, void (*log)(const wchar_t* fmt, ...)) {
-    std::wstring plugins = gameDir + L"\\plugins\\";
-    if (!Exists(install + L"EchoXRHands.dll")) return;
-    std::string ours = ReadAll(install + L"dbgcore.dll");
-    LoaderState st = ClassifyLoader(gameDir, ours.data(), ours.size());
-    if (st == L_FOREIGN) {
-        log(L"hand tracking: a dbgcore.dll that isn't a plugin loader is in the game folder -- "
-            L"left alone, so the hand tracking plugin isn't installed. Run EchoXRSetup.exe to replace it.");
-        return;
-    }
-    CreateDirectoryW(plugins.c_str(), nullptr);
-    if (st == L_LEGACY) {
-        std::wstring legacy = gameDir + L"\\" + kLegacyRel;
-        if (!MoveFileExW((gameDir + L"\\dbgcore.dll").c_str(), legacy.c_str(), MOVEFILE_REPLACE_EXISTING)) {
-            log(L"hand tracking: couldn't move the old dbgcore.dll into plugins\\ (error %lu)", GetLastError());
-            return;
-        }
-        log(L"hand tracking: moved the old dbgcore.dll to %ls", kLegacyRel);
-    }
-    if (st == L_MISSING || st == L_LEGACY) {
-        DWORD e = WriteAll(gameDir + L"\\dbgcore.dll", ours.data(), ours.size());
-        log(e ? L"hand tracking: couldn't install the plugin loader (error %lu)" : L"hand tracking: installed the plugin loader (dbgcore.dll)", e);
-        if (e) return;
-    }
-    // pre-rename plugin: it would load next to the new one
-    if (DeleteFileW((plugins + L"HandTrackingValve.dll").c_str())) log(L"hand tracking: removed the old HandTrackingValve.dll");
-    if (!Exists(plugins + L"EchoXRHands.txt") && Exists(plugins + L"handtracking_config.txt") &&
-        MoveFileExW((plugins + L"handtracking_config.txt").c_str(), (plugins + L"EchoXRHands.txt").c_str(), 0))
-        log(L"hand tracking: kept your settings (handtracking_config.txt is now EchoXRHands.txt)");
-    if (!SameFile(install + L"EchoXRHands.dll", plugins + L"EchoXRHands.dll")) {
-        BOOL ok = CopyFileW((install + L"EchoXRHands.dll").c_str(), (plugins + L"EchoXRHands.dll").c_str(), FALSE);
-        log(ok ? L"hand tracking: installed plugins\\EchoXRHands.dll" : L"hand tracking: couldn't copy EchoXRHands.dll (error %lu) -- is Echo already running?", GetLastError());
-    }
-    if (!Exists(plugins + L"EchoXRHands.txt") &&
-        CopyFileW((install + L"EchoXRHands.txt").c_str(), (plugins + L"EchoXRHands.txt").c_str(), TRUE))
-        log(L"hand tracking: installed default settings (plugins\\EchoXRHands.txt)");
 }
 
 }  // namespace echoxr
