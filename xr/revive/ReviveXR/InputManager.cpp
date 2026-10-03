@@ -73,6 +73,8 @@ InputManager::~InputManager()
 
 ovrResult InputManager::SetControllerVibration(ovrSession session, ovrControllerType controllerType, float frequency, float amplitude)
 {
+	std::lock_guard<std::mutex> lock(m_ActionMutex);
+
 	// Clamp the input
 	frequency = std::min(std::max(frequency, 0.0f), 1.0f);
 	amplitude = std::min(std::max(amplitude, 0.0f), 1.0f);
@@ -88,7 +90,10 @@ ovrResult InputManager::SetControllerVibration(ovrSession session, ovrController
 
 ovrResult InputManager::GetInputState(ovrSession session, ovrControllerType controllerType, ovrInputState* inputState)
 {
+	std::lock_guard<std::mutex> lock(m_ActionMutex);
 	memset(inputState, 0, sizeof(ovrInputState));
+	if (session->Session)
+		SyncIfStale(session->Session);
 
 	if (controllerType == ovrControllerType_Active)
 		controllerType = ovrControllerType_Touch;
@@ -107,6 +112,8 @@ ovrResult InputManager::GetInputState(ovrSession session, ovrControllerType cont
 
 ovrResult InputManager::SubmitControllerVibration(ovrSession session, ovrControllerType controllerType, const ovrHapticsBuffer* buffer)
 {
+	std::lock_guard<std::mutex> lock(m_ActionMutex);
+
 	for (InputDevice* device : m_InputDevices)
 	{
 		if (controllerType & device->GetType() && device->IsConnected())
@@ -118,6 +125,8 @@ ovrResult InputManager::SubmitControllerVibration(ovrSession session, ovrControl
 
 ovrResult InputManager::GetControllerVibrationState(ovrSession session, ovrControllerType controllerType, ovrHapticsPlaybackState* outState)
 {
+	std::lock_guard<std::mutex> lock(m_ActionMutex);
+
 	memset(outState, 0, sizeof(ovrHapticsPlaybackState));
 
 	for (InputDevice* device : m_InputDevices)
@@ -196,6 +205,8 @@ void InputManager::GetTrackingState(ovrSession session, ovrTrackingState* outSta
 
 	if (!session->Session)
 		return;
+	std::lock_guard<std::mutex> lock(m_ActionMutex);
+	SyncIfStale(session->Session);
 
 	if (absTime <= 0.0)
 		absTime = ovr_GetTimeInSeconds();
@@ -236,6 +247,10 @@ void InputManager::GetTrackingState(ovrSession session, ovrTrackingState* outSta
 
 ovrResult InputManager::GetDevicePoses(ovrSession session, ovrTrackedDeviceType* deviceTypes, int deviceCount, double absTime, ovrPoseStatef* outDevicePoses)
 {
+	std::lock_guard<std::mutex> lock(m_ActionMutex);
+	if (session->Session)
+		SyncIfStale(session->Session);
+
 	if (absTime <= 0.0)
 		absTime = ovr_GetTimeInSeconds();
 
@@ -299,7 +314,7 @@ bool InputManager::Action::GetDigital(XrSession session, ovrHandType hand) const
 	XrActionStateBoolean data = XR_TYPE(ACTION_STATE_BOOLEAN);
 	XrResult rs = xrGetActionStateBoolean(session, &info, &data);
 	assert(XR_SUCCEEDED(rs));
-	return data.currentState;
+	return XR_SUCCEEDED(rs) && data.isActive && data.currentState;
 }
 
 bool InputManager::Action::IsPressed(XrSession session, ovrHandType hand) const
@@ -918,6 +933,9 @@ void InputManager::XboxGamepad::GetActiveSets(std::vector<XrActiveActionSet>& ou
 
 ovrResult InputManager::AttachSession(XrSession session)
 {
+	std::lock_guard<std::mutex> lock(m_ActionMutex);
+	m_LastSync = {};
+
 	for (XrSpace space : m_ActionSpaces)
 		CHK_XR(xrDestroySpace(space));
 	m_ActionSpaces.clear();
@@ -941,12 +959,28 @@ ovrResult InputManager::AttachSession(XrSession session)
 
 ovrResult InputManager::SyncInputState(XrSession session, XrDuration displayPeriod)
 {
-	XrActionsSyncInfo syncInfo = XR_TYPE(ACTIONS_SYNC_INFO);
-	syncInfo.countActiveActionSets = (uint32_t)m_ActionSets.size();
-	syncInfo.activeActionSets = m_ActionSets.data();
-	CHK_XR(xrSyncActions(session, &syncInfo));
+	std::lock_guard<std::mutex> lock(m_ActionMutex);
+	CHK_XR(SyncActions(session));
 
 	for (InputDevice* device : m_InputDevices)
 		device->UpdateHaptics(session, displayPeriod);
 	return ovrSuccess;
+}
+
+XrResult InputManager::SyncActions(XrSession session)
+{
+	XrActionsSyncInfo syncInfo = XR_TYPE(ACTIONS_SYNC_INFO);
+	syncInfo.countActiveActionSets = (uint32_t)m_ActionSets.size();
+	syncInfo.activeActionSets = m_ActionSets.data();
+	XrResult rs = xrSyncActions(session, &syncInfo);
+	if (XR_SUCCEEDED(rs))
+		m_LastSync = std::chrono::steady_clock::now();
+	return rs;
+}
+
+void InputManager::SyncIfStale(XrSession session)
+{
+	// A failure here (session not running yet) leaves the previous state; the next frame syncs.
+	if (std::chrono::steady_clock::now() - m_LastSync > std::chrono::milliseconds(5))
+		SyncActions(session);
 }

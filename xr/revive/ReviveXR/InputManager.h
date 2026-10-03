@@ -5,6 +5,8 @@
 #include "HapticsBuffer.h"
 
 #include <openxr/openxr.h>
+#include <chrono>
+#include <mutex>
 #include <vector>
 
 class Runtime;
@@ -200,6 +202,15 @@ protected:
 	std::vector<XrActiveActionSet> m_ActionSets;
 
 	ovrTrackingState m_LastTrackingState;
+
+	// EchoXR: Echo reads input and tracking from several threads, and not every runtime
+	// copes with overlapping action calls, so all of them take this lock. Reads also sync
+	// the actions when the last sync is older than a few milliseconds: before the first
+	// frame nothing synced them, and the controllers looked untracked.
+	std::mutex m_ActionMutex;
+	std::chrono::steady_clock::time_point m_LastSync;
+	XrResult SyncActions(XrSession session);
+	void SyncIfStale(XrSession session);
 
 	static unsigned int SpaceRelationToPoseState(const XrSpaceLocation& location, double time, ovrPoseStatef& lastPoseState, ovrPoseStatef& outPoseState);
 };
