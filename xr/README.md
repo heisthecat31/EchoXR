@@ -6,7 +6,7 @@ game renders and tracks through SteamVR's OpenXR runtime on Windows, through Pro
 wineopenxr on Linux (SteamVR, Monado, WiVRn), or any other OpenXR runtime you choose.
 
 It ships as the `EchoXR-OpenXR-v<version>.zip` release (see the
-[top-level README](../README.md)).
+[README](../README.md)).
 
 ---
 
@@ -45,7 +45,7 @@ points Echo at it. Starting `echovr.exe` the usual way is unaffected.
 
 Source: `src/launcher.cpp`, with `src/proton_vr.h` and `src/preflight.h`. It has no
 window: it sets up one launch, starts Echo, waits for it to exit and returns Echo's exit
-code, or one of its own (listed in the top-level README).
+code, or one of its own (listed in [docs/ADVANCED.md](../docs/ADVANCED.md)).
 
 1. **Checks and sets up.** `EchoXR.exe` has to be next to `echovr.exe`, and
    `EchoXR\LibOVRRT64_1.dll` and `openxr_loader.dll` have to exist. If
@@ -61,8 +61,8 @@ code, or one of its own (listed in the top-level README).
    setup only gets to OpenXR after it has started an OpenVR client. When it didn't
    (no OpenVR runtime, VR service not up yet), `EchoXR.exe` calls the same
    `wineopenxr_init_registry` export Proton calls, with a 20 s limit, and marks the
-   prefix's volatile `HKCU\Software\Wine\VR` key ready. See "Linux" in the top-level
-   README.
+   prefix's volatile `HKCU\Software\Wine\VR` key ready. See "Linux in detail" in
+   [docs/ADVANCED.md](../docs/ADVANCED.md).
 4. **Checks the runtime and the headset** (`src/preflight.h`). Through
    `EchoXR\openxr_loader.dll` it creates an OpenXR instance (20 s limit) and asks for a
    head-mounted system, waiting up to 15 s for one that's asleep. The runtime's and the
@@ -99,7 +99,7 @@ with any other launch.
 
 ## Building
 
-See "Building" in the [top-level README](../README.md): one CMake build, with MSVC on
+See "Building" in [docs/ADVANCED.md](../docs/ADVANCED.md): one CMake build, with MSVC on
 Windows or clang-cl on macOS and Linux. Its inputs:
 
 | What | Where | Pinned at |
