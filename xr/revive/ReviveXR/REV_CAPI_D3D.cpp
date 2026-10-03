@@ -152,6 +152,13 @@ OVR_PUBLIC_FUNCTION(ovrResult) ovr_CreateTextureSwapChainDX(ovrSession session,
 	{
 		if (pDevice)
 		{
+			// EchoXR: under Wine only D3D12 is enabled (see echoxr_policy.h).
+			if (!Runtime::Get().Supports(XR_KHR_D3D11_ENABLE_EXTENSION_NAME))
+			{
+				EchoXR_Log("The game renders with D3D11, which EchoXR doesn't enable under Wine (D3D12 only)");
+				return ovrError_Unsupported;
+			}
+
 			XR_FUNCTION(session->Instance, GetD3D11GraphicsRequirementsKHR);
 			XrGraphicsRequirementsD3D11KHR graphicsReq = XR_TYPE(GRAPHICS_REQUIREMENTS_D3D11_KHR);
 			CHK_XR(GetD3D11GraphicsRequirementsKHR(session->Instance, session->System, &graphicsReq));
@@ -171,7 +178,7 @@ OVR_PUBLIC_FUNCTION(ovrResult) ovr_CreateTextureSwapChainDX(ovrSession session,
 
 			XrGraphicsBindingD3D11KHR graphicsBinding = XR_TYPE(GRAPHICS_BINDING_D3D11_KHR);
 			graphicsBinding.device = pDevice.Get();
-			session->StartSession(&graphicsBinding);
+			CHK_OVR(session->StartSession(&graphicsBinding));
 		}
 		else if (pQueue)
 		{
@@ -206,7 +213,7 @@ OVR_PUBLIC_FUNCTION(ovrResult) ovr_CreateTextureSwapChainDX(ovrSession session,
 			XrGraphicsBindingD3D12KHR graphicsBinding = XR_TYPE(GRAPHICS_BINDING_D3D12_KHR);
 			graphicsBinding.device = pDevice12.Get();
 			graphicsBinding.queue = pQueue.Get();
-			session->StartSession(&graphicsBinding);
+			CHK_OVR(session->StartSession(&graphicsBinding));
 		}
 		else
 		{

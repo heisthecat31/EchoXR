@@ -1,6 +1,7 @@
 #include "Swapchain.h"
 #include "Common.h"
 #include "Session.h"
+#include "../../src/echoxr_policy.h"
 
 #include <openxr/openxr.h>
 #include <dxgiformat.h>
@@ -143,8 +144,22 @@ D3D_SRV_DIMENSION ovrTextureSwapChainData::DescToViewDimension(const ovrTextureS
 
 DXGI_FORMAT ovrTextureSwapChainData::NegotiateFormat(ovrSession session, DXGI_FORMAT format)
 {
+	DXGI_FORMAT chosen = NegotiateFormatQuiet(session, format);
+	if (chosen != format)
+		EchoXR_Log("Swapchain format %d isn't offered by the runtime, using %d", (int)format, (int)chosen);
+	return chosen;
+}
+
+DXGI_FORMAT ovrTextureSwapChainData::NegotiateFormatQuiet(ovrSession session, DXGI_FORMAT format)
+{
 	if (session->SupportsFormat(format))
 		return format;
+
+	// EchoXR: D24S8 isn't there through Proton on AMD GPUs; D32S8 keeps the stencil.
+	const int64_t depth = echoxr::NegotiateDepthFormat(format, false,
+		session->SupportsFormat(DXGI_FORMAT_D32_FLOAT_S8X24_UINT));
+	if (depth != format)
+		return (DXGI_FORMAT)depth;
 
 	// Upgrade R11G11B10F to RGBA16F if it's available
 	if (format == DXGI_FORMAT_R11G11B10_FLOAT && session->SupportsFormat(DXGI_FORMAT_R16G16B16A16_FLOAT))

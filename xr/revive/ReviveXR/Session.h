@@ -44,6 +44,10 @@ struct ovrHmdStruct
 	std::pair<std::mutex,
 		std::condition_variable> Running;
 	std::shared_mutex TrackingMutex;
+	// EchoXR: a frame is begun (xrBeginFrame) and not yet ended; the eye-level origin still
+	// has to be recentered once the first frame has a predicted display time.
+	std::atomic<bool> FrameBegun{ false };
+	std::atomic<bool> RecenterPending{ false };
 
 	// System handles
 	XrInstance Instance;
@@ -81,6 +85,8 @@ struct ovrHmdStruct
 	std::unique_ptr<InputManager> Input;
 
 	ovrResult InitSession(XrInstance instance);
+	ovrResult QueryAdapter();
+	ovrResult ProbeViews();
 	ovrResult StartSession(void* graphicsBinding);
 	ovrResult BeginSession();
 	ovrResult EndSession();

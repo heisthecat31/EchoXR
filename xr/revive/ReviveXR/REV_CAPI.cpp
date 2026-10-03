@@ -5,6 +5,7 @@
 #include "version.h"
 
 #include "Common.h"
+#include "../../src/echoxr_policy.h"
 #include "Session.h"
 #include "Runtime.h"
 #include "InputManager.h"
@@ -54,6 +55,9 @@ bool LoadRenderDoc()
 
 void AttachDetours();
 void DetachDetours();
+
+static_assert(echoxr::kLayerEyeFov == ovrLayerType_EyeFov && echoxr::kLayerEyeFovDepth == ovrLayerType_EyeFovDepth &&
+	echoxr::kLayerEyeMatrix == ovrLayerType_EyeMatrix, "echoxr_policy.h layer types");
 
 OVR_PUBLIC_FUNCTION(ovrResult) ovr_Initialize(const ovrInitParams* params)
 {
@@ -148,7 +152,7 @@ OVR_PUBLIC_FUNCTION(ovrHmdDesc) ovr_GetHmdDesc(ovrSession session)
 	if (session->SystemProperties.trackingProperties.orientationTracking)
 		desc.AvailableTrackingCaps |= ovrTrackingCap_Orientation;
 	if (session->SystemProperties.trackingProperties.positionTracking)
-		desc.AvailableTrackingCaps |= ovrTrackingCap_Orientation;
+		desc.AvailableTrackingCaps |= ovrTrackingCap_Position;
 	desc.DefaultTrackingCaps = desc.AvailableTrackingCaps;
 
 	for (int i = 0; i < ovrEye_Count; i++)
@@ -213,7 +217,13 @@ OVR_PUBLIC_FUNCTION(ovrResult) ovr_Create(ovrSession* pSession, ovrGraphicsLuid*
 	ovrSession session = &g_Sessions.back();
 
 	// Initialize session, it will not be fully usable until a swapchain is created
-	CHK_OVR(session->InitSession(g_Instance));
+	ovrResult result = session->InitSession(g_Instance);
+	if (OVR_FAILURE(result))
+	{
+		EchoXR_Log("ovr_Create failed (%d)", result);
+		g_Sessions.pop_back();
+		return result;
+	}
 	if (pLuid)
 		*pLuid = session->Adapter;
 	*pSession = session;
@@ -223,6 +233,9 @@ OVR_PUBLIC_FUNCTION(ovrResult) ovr_Create(ovrSession* pSession, ovrGraphicsLuid*
 OVR_PUBLIC_FUNCTION(void) ovr_Destroy(ovrSession session)
 {
 	REV_TRACE(ovr_Destroy);
+
+	if (!session)
+		return;
 
 	session->DestroySession();
 
@@ -262,6 +275,10 @@ OVR_PUBLIC_FUNCTION(ovrResult) ovr_GetSessionStatus(ovrSession session, ovrSessi
 				reinterpret_cast<XrEventDataSessionStateChanged&>(event);
 			if (stateChanged.session == session->Session)
 			{
+				static const char* const names[] = { "unknown", "idle", "ready", "synchronized",
+					"visible", "focused", "stopping", "loss pending", "exiting" };
+				const unsigned index = (unsigned)stateChanged.state;
+				EchoXR_Log("Session state: %s", index < 9 ? names[index] : "unknown");
 				switch (stateChanged.state)
 				{
 				case XR_SESSION_STATE_IDLE:
@@ -910,6 +927,10 @@ OVR_PUBLIC_FUNCTION(ovrResult) ovr_WaitToBeginFrame(ovrSession session, long lon
 	frameState->frameIndex = frameIndex;
 	session->CurrentFrame = frameState;
 
+	// EchoXR: the session's first frame has a predicted time now (see BeginSession).
+	if (session->RecenterPending.exchange(false))
+		session->RecenterSpace(ovrTrackingOrigin_EyeLevel, session->ViewSpace);
+
 	if (session->Input)
 		session->Input->SyncInputState(session->Session, frameState->predictedDisplayPeriod);
 	return ovrSuccess;
@@ -931,6 +952,7 @@ OVR_PUBLIC_FUNCTION(ovrResult) ovr_BeginFrame(ovrSession session, long long fram
 
 	XrFrameBeginInfo beginInfo = XR_TYPE(FRAME_BEGIN_INFO);
 	CHK_XR(xrBeginFrame(session->Session, &beginInfo));
+	session->FrameBegun = true;
 	return ovrSuccess;
 }
 
@@ -1140,7 +1162,8 @@ OVR_PUBLIC_FUNCTION(ovrResult) ovr_EndFrame(ovrSession session, long long frameI
 		}
 
 		XrCompositionLayerBaseHeader& header = newLayer.Header;
-		header.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
+		// EchoXR: eye layers are opaque, as on Oculus's compositor (echoxr_policy.h).
+		header.layerFlags = echoxr::BlendsByAlpha(type) ? XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT : 0;
 		if (headLocked)
 			header.space = session->ViewSpace;
 		else
@@ -1159,7 +1182,12 @@ OVR_PUBLIC_FUNCTION(ovrResult) ovr_EndFrame(ovrSession session, long long frameI
 	endInfo.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
 	endInfo.layerCount = (uint32_t)layers.size();
 	endInfo.layers = layers.data();
+	session->FrameBegun = false;
 	CHK_XR(xrEndFrame(session->Session, &endInfo));
+
+	static std::atomic<bool> firstFrameLogged{ false };
+	if (!layers.empty() && !firstFrameLogged.exchange(true))
+		EchoXR_Log("First frame submitted: %u layer(s)", (unsigned)layers.size());
 
 	MicroProfileFlip();
 
@@ -1178,6 +1206,14 @@ OVR_PUBLIC_FUNCTION(ovrResult) ovr_SubmitFrame2(ovrSession session, long long fr
 	long long currentIndex = (*session->CurrentFrame).frameIndex;
 	if (frameIndex <= 0)
 		frameIndex = currentIndex;
+
+	// EchoXR: a game that only submits gets its first frame opened here (see BeginSession).
+	if (!session->FrameBegun)
+	{
+		CHK_OVR(ovr_WaitToBeginFrame(session, frameIndex));
+		CHK_OVR(ovr_BeginFrame(session, frameIndex));
+		currentIndex = (*session->CurrentFrame).frameIndex;
+	}
 
 	// Some older games submit frames redundantly, so we discard old frames in the legacy call
 	if (frameIndex >= currentIndex)

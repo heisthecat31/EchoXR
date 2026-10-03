@@ -46,6 +46,7 @@ struct ovrTextureSwapChainData
 	static enum DXGI_FORMAT TextureFormatToDXGIFormat(ovrTextureFormat format);
 	static enum D3D_SRV_DIMENSION DescToViewDimension(const ovrTextureSwapChainDesc* desc);
 	static enum DXGI_FORMAT NegotiateFormat(ovrSession session, enum DXGI_FORMAT format);
+	static enum DXGI_FORMAT NegotiateFormatQuiet(ovrSession session, enum DXGI_FORMAT format);
 };
 
 struct ovrMirrorTextureData

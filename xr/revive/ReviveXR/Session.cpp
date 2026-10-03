@@ -5,20 +5,23 @@
 #include "Runtime.h"
 #include "InputManager.h"
 
+#include "../../src/echoxr_policy.h"
+
 #define XR_USE_GRAPHICS_API_D3D11
+#define XR_USE_GRAPHICS_API_D3D12
 #include <d3d11.h>
+#include <d3d12.h>
 #include <dxgi1_2.h>
 #include <openxr/openxr.h>
 #include <openxr/openxr_platform.h>
 #include <wrl/client.h>
+#include <chrono>
 #include <thread>
 
 using namespace std::chrono_literals;
 
 ovrResult ovrHmdStruct::InitSession(XrInstance instance)
 {
-	XR_FUNCTION(instance, GetD3D11GraphicsRequirementsKHR);
-
 	memset(FrameStats, 0, sizeof(FrameStats));
 	for (int i = 0; i < ovrMaxProvidedFrameStats; i++)
 		FrameStats[i].type = XR_TYPE_FRAME_STATE;
@@ -53,16 +56,12 @@ ovrResult ovrHmdStruct::InitSession(XrInstance instance)
 	CHK_XR(xrEnumerateViewConfigurationViews(Instance, System, XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO, ovrEye_Count, &numViews, ViewConfigs));
 	assert(numViews == ovrEye_Count);
 
-	XrGraphicsRequirementsD3D11KHR graphicsReq = XR_TYPE(GRAPHICS_REQUIREMENTS_D3D11_KHR);
-	CHK_XR(GetD3D11GraphicsRequirementsKHR(Instance, System, &graphicsReq));
+	// The adapter the runtime renders on. EchoXR: from the D3D12 requirements under Wine,
+	// where D3D11 isn't enabled.
+	CHK_OVR(QueryAdapter());
 
-	// Copy the LUID into the structure
-	static_assert(sizeof(graphicsReq.adapterLuid) == sizeof(ovrGraphicsLuid),
-		"The adapter LUID needs to fit in ovrGraphicsLuid");
-	memcpy(&Adapter, &graphicsReq.adapterLuid, sizeof(ovrGraphicsLuid));
-
-	// Create a temporary session to retrieve the headset field-of-view
-	Microsoft::WRL::ComPtr<IDXGIFactory1> pFactory = NULL;
+	// The headset's field of view: from the EPIC extension when the game doesn't need more,
+	// else from a short-lived session (ProbeViews).
 	if (Runtime::Get().MinorVersion >= 17 && Runtime::Get().Supports(XR_EPIC_VIEW_CONFIGURATION_FOV_EXTENSION_NAME) &&
 		!Runtime::Get().UseHack(Runtime::HACK_FORCE_FOV_FALLBACK))
 	{
@@ -72,71 +71,14 @@ ovrResult ovrHmdStruct::InitSession(XrInstance instance)
 			ViewPoses[i].pose = XR::Posef::Identity();
 		}
 	}
-	else if (SUCCEEDED(CreateDXGIFactory1(__uuidof(IDXGIFactory1), (void**)&pFactory)))
+	else
 	{
-		Microsoft::WRL::ComPtr<IDXGIAdapter1> pAdapter;
-		Microsoft::WRL::ComPtr<ID3D11Device> pDevice;
-
-		for (UINT i = 0; pFactory->EnumAdapters1(i, &pAdapter) != DXGI_ERROR_NOT_FOUND; ++i)
-		{
-			DXGI_ADAPTER_DESC1 adapterDesc;
-			if (SUCCEEDED(pAdapter->GetDesc1(&adapterDesc)) &&
-				memcmp(&adapterDesc.AdapterLuid, &graphicsReq.adapterLuid, sizeof(graphicsReq.adapterLuid)) == 0)
-			{
-				break;
-			}
-		}
-
-		HRESULT hr = D3D11CreateDevice(pAdapter.Get(),
-			D3D_DRIVER_TYPE_UNKNOWN, 0, 0,
-			NULL, 0, D3D11_SDK_VERSION,
-			&pDevice, nullptr, nullptr);
-		assert(SUCCEEDED(hr));
-
-		XrGraphicsBindingD3D11KHR graphicsBinding = XR_TYPE(GRAPHICS_BINDING_D3D11_KHR);
-		graphicsBinding.device = pDevice.Get();
-		CHK_OVR(StartSession(&graphicsBinding));
-
-		if (Runtime::Get().UseHack(Runtime::HACK_WAIT_FOR_SESSION_READY))
-		{
-			// Synchronously wait for the fake session to become ready.
-			XrEventDataBuffer event;
-			const XrEventDataSessionStateChanged& stateChanged =
-				reinterpret_cast<XrEventDataSessionStateChanged&>(event);
-			// EchoXR: bounded wait -- an idle/asleep headset never reports READY, and an
-			// unbounded loop would hang the game's startup forever.
-			const auto waitStart = std::chrono::steady_clock::now();
-			do
-			{
-				event = XR_TYPE(EVENT_DATA_BUFFER);
-				XrResult result = xrPollEvent(Instance, &event);
-				if (XR_FAILED(result))
-					break;
-				if (result == XR_EVENT_UNAVAILABLE)
-					std::this_thread::sleep_for(10ms);
-				if (std::chrono::steady_clock::now() - waitStart > std::chrono::seconds(5))
-				{
-					EchoXR_Log("temporary FOV session never became READY within 5 s (headset asleep?)");
-					break;
-				}
-			} while (event.type != XR_TYPE_EVENT_DATA_SESSION_STATE_CHANGED ||
-				stateChanged.state != XR_SESSION_STATE_READY);
-			assert(stateChanged.session == Session);
-
-			XrSessionBeginInfo beginInfo = XR_TYPE(SESSION_BEGIN_INFO);
-			beginInfo.primaryViewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
-			CHK_XR(xrBeginSession(Session, &beginInfo));
-		}
-
-		CHK_OVR(LocateViews(ViewPoses));
+		CHK_OVR(ProbeViews());
 		for (int i = 0; i < ovrEye_Count; i++)
 		{
 			ViewFov[i].recommendedFov = ViewPoses[i].fov;
 			ViewFov[i].maxMutableFov = ViewPoses[i].fov;
 		}
-
-		CHK_XR(xrGetReferenceSpaceBoundsRect(Session, XR_REFERENCE_SPACE_TYPE_STAGE, &bounds));
-		CHK_OVR(DestroySession());
 	}
 
 	// Calculate the pixels per tan angle
@@ -152,6 +94,186 @@ ovrResult ovrHmdStruct::InitSession(XrInstance instance)
 	// Initialize input manager
 	Input.reset(new InputManager(Instance));
 	return ovrSuccess;
+}
+
+ovrResult ovrHmdStruct::QueryAdapter()
+{
+	static_assert(sizeof(LUID) == sizeof(ovrGraphicsLuid), "The adapter LUID needs to fit in ovrGraphicsLuid");
+	if (echoxr::ProbeApi(Runtime::Get().Wine) == echoxr::GraphicsApi::D3D12)
+	{
+		XR_FUNCTION(Instance, GetD3D12GraphicsRequirementsKHR);
+		XrGraphicsRequirementsD3D12KHR graphicsReq = XR_TYPE(GRAPHICS_REQUIREMENTS_D3D12_KHR);
+		CHK_XR(GetD3D12GraphicsRequirementsKHR(Instance, System, &graphicsReq));
+		memcpy(&Adapter, &graphicsReq.adapterLuid, sizeof(ovrGraphicsLuid));
+	}
+	else
+	{
+		XR_FUNCTION(Instance, GetD3D11GraphicsRequirementsKHR);
+		XrGraphicsRequirementsD3D11KHR graphicsReq = XR_TYPE(GRAPHICS_REQUIREMENTS_D3D11_KHR);
+		CHK_XR(GetD3D11GraphicsRequirementsKHR(Instance, System, &graphicsReq));
+		memcpy(&Adapter, &graphicsReq.adapterLuid, sizeof(ovrGraphicsLuid));
+	}
+	return ovrSuccess;
+}
+
+// Reads the headset's field of view (and the play area's bounds) from a short-lived session,
+// before the game has handed over its graphics device: Echo asks for its render sizes first.
+// EchoXR: with no device where the runtime offers XR_MND_headless; else on a temporary
+// device of the API the game uses on this platform (D3D12 under Wine, so Proton's bridge
+// never sees two graphics APIs), on the runtime's adapter or else the first one. Every
+// runtime gets the wait for READY: SteamVR and WMR refuse to locate views before it.
+ovrResult ovrHmdStruct::ProbeViews()
+{
+	using Microsoft::WRL::ComPtr;
+	const bool d3d12 = echoxr::ProbeApi(Runtime::Get().Wine) == echoxr::GraphicsApi::D3D12;
+	ComPtr<ID3D11Device> device11;
+	ComPtr<ID3D12Device> device12;
+	ComPtr<ID3D12CommandQueue> queue12;
+	XrGraphicsBindingD3D11KHR binding11 = XR_TYPE(GRAPHICS_BINDING_D3D11_KHR);
+	XrGraphicsBindingD3D12KHR binding12 = XR_TYPE(GRAPHICS_BINDING_D3D12_KHR);
+	const void* binding = nullptr;
+	const char* how = "no graphics device (XR_MND_headless)";
+
+	if (!Runtime::Get().Headless)
+	{
+		ComPtr<IDXGIFactory1> factory;
+		if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&factory))))
+			return ovrError_IncompatibleGPU;
+		std::vector<ComPtr<IDXGIAdapter1>> adapters;
+		std::vector<LUID> luids;
+		ComPtr<IDXGIAdapter1> candidate;
+		for (UINT i = 0; factory->EnumAdapters1(i, &candidate) != DXGI_ERROR_NOT_FOUND; ++i)
+		{
+			DXGI_ADAPTER_DESC1 desc;
+			if (FAILED(candidate->GetDesc1(&desc)))
+				continue;
+			adapters.push_back(candidate);
+			luids.push_back(desc.AdapterLuid);
+		}
+		LUID wanted;
+		memcpy(&wanted, &Adapter, sizeof(wanted));
+		const int pick = echoxr::PickAdapter(luids, wanted);
+		if (pick < 0)
+		{
+			EchoXR_Log("Field-of-view probe: no graphics adapter found");
+			return ovrError_IncompatibleGPU;
+		}
+		if (memcmp(&luids[pick], &wanted, sizeof(wanted)) != 0)
+			EchoXR_Log("Field-of-view probe: no adapter has the runtime's LUID, using the first one");
+
+		if (d3d12)
+		{
+			D3D12_COMMAND_QUEUE_DESC queueDesc = {};
+			queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
+			if (FAILED(D3D12CreateDevice(adapters[pick].Get(), D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device12))) ||
+				FAILED(device12->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&queue12))))
+			{
+				EchoXR_Log("Field-of-view probe: couldn't create a D3D12 device");
+				return ovrError_IncompatibleGPU;
+			}
+			binding12.device = device12.Get();
+			binding12.queue = queue12.Get();
+			binding = &binding12;
+			how = "a temporary D3D12 device";
+		}
+		else
+		{
+			if (FAILED(D3D11CreateDevice(adapters[pick].Get(), D3D_DRIVER_TYPE_UNKNOWN, 0, 0,
+				NULL, 0, D3D11_SDK_VERSION, &device11, nullptr, nullptr)))
+			{
+				EchoXR_Log("Field-of-view probe: couldn't create a D3D11 device");
+				return ovrError_IncompatibleGPU;
+			}
+			binding11.device = device11.Get();
+			binding = &binding11;
+			how = "a temporary D3D11 device";
+		}
+	}
+	EchoXR_Log("Field-of-view probe: a session with %s", how);
+
+	XrSession probe = XR_NULL_HANDLE;
+	XrSessionCreateInfo createInfo = XR_TYPE(SESSION_CREATE_INFO);
+	createInfo.next = binding;
+	createInfo.systemId = System;
+	CHK_XR(xrCreateSession(Instance, &createInfo, &probe));
+
+	XrSpace view = XR_NULL_HANDLE;
+	XrReferenceSpaceCreateInfo spaceInfo = XR_TYPE(REFERENCE_SPACE_CREATE_INFO);
+	spaceInfo.poseInReferenceSpace = XR::Posef::Identity();
+	spaceInfo.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_VIEW;
+	ovrResult result = ResultToOvrResult(xrCreateReferenceSpace(probe, &spaceInfo, &view));
+
+	// Wait (bounded) until the runtime makes the session ready, then begin it.
+	if (OVR_SUCCESS(result))
+	{
+		result = ovrError_Timeout;
+		XrEventDataBuffer event;
+		const XrEventDataSessionStateChanged& stateChanged =
+			reinterpret_cast<XrEventDataSessionStateChanged&>(event);
+		const auto deadline = std::chrono::steady_clock::now() + 10s;
+		while (std::chrono::steady_clock::now() < deadline)
+		{
+			event = XR_TYPE(EVENT_DATA_BUFFER);
+			XrResult polled = xrPollEvent(Instance, &event);
+			if (polled == XR_EVENT_UNAVAILABLE)
+			{
+				std::this_thread::sleep_for(10ms);
+				continue;
+			}
+			if (XR_FAILED(polled))
+			{
+				EchoXR_LogFail("xrPollEvent", (int)polled, __FILE__, __LINE__);
+				result = ResultToOvrResult(polled);
+				break;
+			}
+			if (event.type == XR_TYPE_EVENT_DATA_SESSION_STATE_CHANGED && stateChanged.session == probe &&
+				stateChanged.state == XR_SESSION_STATE_READY)
+			{
+				result = ovrSuccess;
+				break;
+			}
+		}
+		if (result == ovrError_Timeout)
+			EchoXR_Log("Field-of-view probe: the session didn't become ready within 10 s (headset asleep, or the VR runtime not ready)");
+	}
+
+	if (OVR_SUCCESS(result))
+	{
+		XrSessionBeginInfo beginInfo = XR_TYPE(SESSION_BEGIN_INFO);
+		beginInfo.primaryViewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
+		XrResult rs = xrBeginSession(probe, &beginInfo);
+		if (XR_FAILED(rs))
+		{
+			EchoXR_LogFail("xrBeginSession (field-of-view probe)", (int)rs, __FILE__, __LINE__);
+			result = ResultToOvrResult(rs);
+		}
+	}
+
+	if (OVR_SUCCESS(result))
+	{
+		uint32_t numViews = 0;
+		XrViewLocateInfo locateInfo = XR_TYPE(VIEW_LOCATE_INFO);
+		XrViewState viewState = XR_TYPE(VIEW_STATE);
+		locateInfo.space = view;
+		locateInfo.viewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
+		locateInfo.displayTime = AbsTimeToXrTime(Instance, ovr_GetTimeInSeconds());
+		XrResult rs = xrLocateViews(probe, &locateInfo, &viewState, ovrEye_Count, &numViews, ViewPoses);
+		if (XR_FAILED(rs))
+		{
+			EchoXR_LogFail("xrLocateViews (field-of-view probe)", (int)rs, __FILE__, __LINE__);
+			result = ResultToOvrResult(rs);
+		}
+		else
+		{
+			// Missing bounds (no play area set up) leave zeros, as before.
+			xrGetReferenceSpaceBoundsRect(probe, XR_REFERENCE_SPACE_TYPE_STAGE, &bounds);
+		}
+	}
+
+	if (view != XR_NULL_HANDLE)
+		xrDestroySpace(view);
+	xrDestroySession(probe);
+	return result;
 }
 
 ovrResult ovrHmdStruct::StartSession(void* graphicsBinding)
@@ -210,16 +332,19 @@ ovrResult ovrHmdStruct::BeginSession()
 	beginInfo.primaryViewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
 	CHK_XR(xrBeginSession(Session, &beginInfo));
 
-	// Start the first frame immediately in case the app uses SubmitFrame().
-	long long currentIndex = (*CurrentFrame).frameIndex;
-	CHK_OVR(ovr_WaitToBeginFrame(this, currentIndex));
-	RecenterSpace(ovrTrackingOrigin_EyeLevel, ViewSpace);
-	CHK_OVR(ovr_BeginFrame(this, currentIndex));
+	// EchoXR: no frame is begun here any more. This runs on whichever thread polls the
+	// session status, and waiting for a frame here raced the game's own frame calls on its
+	// render thread. The eye-level origin is recentered after the first xrWaitFrame instead
+	// (ovr_WaitToBeginFrame), and a game that only calls ovr_SubmitFrame gets its first frame
+	// opened there.
+	FrameBegun = false;
+	RecenterPending = true;
 	return ovrSuccess;
 }
 
 ovrResult ovrHmdStruct::EndSession()
 {
+	FrameBegun = false;
 	CHK_XR(xrEndSession(Session));
 	return ovrSuccess;
 }
@@ -232,6 +357,7 @@ ovrResult ovrHmdStruct::DestroySession()
 	if (Input)
 		Input->AttachSession(XR_NULL_HANDLE);
 
+	FrameBegun = false;
 	CHK_XR(xrDestroySession(Session));
 	Session = XR_NULL_HANDLE;
 	ViewSpace = XR_NULL_HANDLE;

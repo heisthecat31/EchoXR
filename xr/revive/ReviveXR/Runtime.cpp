@@ -1,6 +1,7 @@
 #include "Runtime.h"
 #include "Common.h"
 #include "version.h"
+#include "../../src/echoxr_policy.h"
 
 #include <Windows.h>
 #include <Shlwapi.h>
@@ -11,32 +12,13 @@
 #include <openxr/openxr.h>
 #include <openxr/openxr_platform.h>
 
-const char* Runtime::s_required_extensions[] = {
-	"XR_KHR_win32_convert_performance_counter_time",
-	"XR_KHR_D3D11_enable"
-};
-
-const char* Runtime::s_optional_extensions[] = {
-	"XR_KHR_D3D12_enable",
-	"XR_KHR_vulkan_enable",
-	"XR_KHR_opengl_enable",
-	XR_KHR_VISIBILITY_MASK_EXTENSION_NAME,
-	XR_KHR_COMPOSITION_LAYER_DEPTH_EXTENSION_NAME,
-	XR_KHR_COMPOSITION_LAYER_CUBE_EXTENSION_NAME,
-	XR_KHR_COMPOSITION_LAYER_CYLINDER_EXTENSION_NAME,
-	XR_EPIC_VIEW_CONFIGURATION_FOV_EXTENSION_NAME,
-	XR_OCULUS_AUDIO_DEVICE_GUID_EXTENSION_NAME,
-	XR_FB_COLOR_SPACE_EXTENSION_NAME
-};
+// The extensions EchoXR enables come from echoxr_policy.h (ChooseExtensions): Revive's set on
+// Windows, and a single graphics API (D3D12) under Wine.
 
 Runtime::HackInfo Runtime::s_known_hacks[] = {
 	{ nullptr, "SteamVR/OpenXR", HACK_VALVE_INDEX_PROFILE, 0, 0, true },
 	{ nullptr, "SteamVR/OpenXR", HACK_BROKEN_LINE_LOOP, 0, 0x100000000, true },
 	{ nullptr, "SteamVR/OpenXR", HACK_MIN_HAPTIC_DURATION, 0, 0, true },
-	{ nullptr, "Windows Mixed Reality Runtime", HACK_WAIT_FOR_SESSION_READY, 0, 0, true },
-	// EchoXR: SteamVR fails xrLocateViews with XR_ERROR_VALIDATION_FAILURE until the
-	// temporary FOV session is running, so it needs the same wait-for-READY as WMR.
-	{ nullptr, "SteamVR/OpenXR", HACK_WAIT_FOR_SESSION_READY, 0, 0, true },
 	{ "echovr.exe", nullptr, HACK_FORCE_FOV_FALLBACK, 0, 0, true },
 	{ "echovr_openxr.exe", nullptr, HACK_FORCE_FOV_FALLBACK, 0, 0, true },   // EchoXR's launch copy
 	{ "loneecho.exe", nullptr, HACK_FORCE_FOV_FALLBACK, 0, 0, true },
@@ -61,22 +43,20 @@ ovrResult Runtime::CreateInstance(XrInstance* out_Instance, const ovrInitParams*
 		props = XR_TYPE(EXTENSION_PROPERTIES);
 	CHK_XR(xrEnumerateInstanceExtensionProperties(nullptr, (uint32_t)properties.size(), &size, properties.data()));
 
-	m_extensions.clear();
+	const char* (CDECL* wineVersion)() = nullptr;
+	if (HMODULE ntdll = GetModuleHandleW(L"ntdll.dll"))
+		wineVersion = (const char* (CDECL*)())GetProcAddress(ntdll, "wine_get_version");
+	Wine = wineVersion != nullptr;
 
-	for (const char* extension : s_required_extensions)
-		m_extensions.push_back(extension);
+	std::vector<std::string> offered;
+	for (const XrExtensionProperties& props : properties)
+		offered.push_back(props.extensionName);
+	m_extensions = echoxr::ChooseExtensions(Wine, offered);
+	for (const char* required : echoxr::RequiredExtensions(Wine))
+		if (std::find(offered.begin(), offered.end(), required) == offered.end())
+			EchoXR_Log("The OpenXR runtime doesn't offer %s, which EchoXR needs", required);
 
-	for (const char* extension : s_optional_extensions)
-	{
-		auto findExtension = [extension](XrExtensionProperties props)
-		{
-			return strcmp(props.extensionName, extension) == 0;
-		};
-
-		if (std::any_of(properties.begin(), properties.end(), findExtension))
-			m_extensions.push_back(extension);
-	}
-
+	Headless = Supports(XR_MND_HEADLESS_EXTENSION_NAME);
 	VisibilityMask = Supports(XR_KHR_VISIBILITY_MASK_EXTENSION_NAME);
 	CompositionDepth = Supports(XR_KHR_COMPOSITION_LAYER_DEPTH_EXTENSION_NAME);
 	CompositionCube = Supports(XR_KHR_COMPOSITION_LAYER_CUBE_EXTENSION_NAME);
@@ -92,6 +72,10 @@ ovrResult Runtime::CreateInstance(XrInstance* out_Instance, const ovrInitParams*
 	createInfo.enabledExtensionNames = m_extensions.data();
 	CHK_XR(xrCreateInstance(&createInfo, out_Instance));
 	{
+		if (Wine)
+			EchoXR_Log("Running under Wine %s: one graphics API, D3D12", wineVersion());
+		else
+			EchoXR_Log("Running on Windows");
 		XrInstanceProperties ip = XR_TYPE(INSTANCE_PROPERTIES);
 		if (XR_SUCCEEDED(xrGetInstanceProperties(*out_Instance, &ip)))
 			EchoXR_Log("OpenXR runtime: %s %u.%u.%u", ip.runtimeName, (unsigned)XR_VERSION_MAJOR(ip.runtimeVersion),

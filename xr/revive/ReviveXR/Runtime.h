@@ -32,8 +32,8 @@ public:
 		// Hack: SteamVR runtime ignores haptic pulses with a long duration.
 		// Set the duration to the minimum duration as a workaround.
 		HACK_MIN_HAPTIC_DURATION,
-		// Hack: WMR runtime doesn't allow views to be located without the session running.
-		// Wait for the session to become ready instead.
+		// Unused since EchoXR: the field-of-view probe waits for the session to become ready on
+		// every runtime (WMR and SteamVR refuse to locate views before; others may too).
 		HACK_WAIT_FOR_SESSION_READY,
 	};
 
@@ -41,6 +41,9 @@ public:
 	ovrResult CreateInstance(XrInstance* out_Instance, const ovrInitParams* params);
 	bool Supports(const char* extensionName);
 
+	// Running under Wine/Proton (EchoXR): one graphics extension, D3D12, see echoxr_policy.h.
+	bool Wine = false;
+	bool Headless;
 	bool VisibilityMask;
 	bool CompositionDepth;
 	bool CompositionCube;
@@ -61,8 +64,6 @@ private:
 		bool m_usehack;				// Should it use the hack?
 	};
 
-	static const char* s_required_extensions[];
-	static const char* s_optional_extensions[];
 	static HackInfo s_known_hacks[];
 
 	std::map<Hack, HackInfo> m_hacks;
