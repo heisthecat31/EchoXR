@@ -1,40 +1,73 @@
-// EchoXR launcher -- starts Echo VR on the OpenXR runtime (SteamVR), no Oculus software.
+// EchoXR launcher -- starts Echo VR on an OpenXR runtime, no Oculus software. No UI: all it
+// has to say goes to EchoXR\launcher.log, and how it ended to its exit code.
 //
 //   EchoXR.exe [--exe <name>] [--runtime steamvr|active] [--setup-only] [echo arguments...]
 //
 // It lives in bin\win10 next to echovr.exe and starts echovr_openxr.exe by default
 // (--exe picks another). First it sets up what's missing: echovr_openxr.exe, a patched
-// copy of echovr.exe (echoxr_common.h). Then it does three things before launching:
-//   1. holds the "OculusHMDConnected" event. Echo's LibOVR shim calls ovr_Detect(),
+// copy of echovr.exe (echoxr_common.h). Then, before launching:
+//   1. picks the OpenXR runtime: SteamVR on Windows (--runtime active: the system's),
+//      Proton's wineopenxr under Wine, which it sets up itself when Proton didn't
+//      (proton_vr.h: no OpenVR runtime needed).
+//   2. checks that the runtime answers and has a headset (preflight.h).
+//   3. holds the "OculusHMDConnected" event. Echo's LibOVR shim calls ovr_Detect(),
 //      which opens this event to decide whether a headset is present; the Oculus
 //      service normally owns it. A plain named event -- no hooks, no injection.
-//   2. sets LIBOVR_DLL_DIR to bin\win10\EchoXR\ -- the directory Echo's own loader
+//   4. sets LIBOVR_DLL_DIR to bin\win10\EchoXR\ -- the directory Echo's own loader
 //      checks FIRST for LibOVRRT64_1.dll -- and puts that folder on PATH so the
 //      runtime's openxr_loader.dll resolves. Only this launch sees these; a normal
 //      launch of Echo is untouched.
-//   3. logs which OpenXR runtime is active (SteamVR, VDXR, ...).
-// Then it starts Echo with the remaining arguments and waits for it to exit.
+// Then it starts Echo with the remaining arguments, waits for it to exit and returns its
+// exit code. Its own failures have codes of their own (see Exit below and the README).
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <shellapi.h>
 #include <stdio.h>
 #include <string>
 #include "echoxr_common.h"
-#include "updater.h"
+#include "preflight.h"
+#include "proton_vr.h"
+
+// EchoXR.exe's own exit codes; anything else is Echo's.
+enum Exit {
+    kNotInGameFolder = 2,   // not next to echovr.exe in bin\win10
+    kRuntimeMissing = 3,    // EchoXR\LibOVRRT64_1.dll or openxr_loader.dll missing
+    kSetupFailed = 4,       // echovr_openxr.exe couldn't be made
+    kNoOpenXR = 5,          // no OpenXR runtime answered (or the VR service isn't running)
+    kNoHeadset = 6,         // the runtime has no headset (not connected, or asleep)
+    kStartFailed = 7,       // Echo couldn't be started
+};
 
 static FILE* g_log = nullptr;
 static void Log(const wchar_t* fmt, ...) {
+    SYSTEMTIME t;
+    GetLocalTime(&t);
     va_list ap;
     va_start(ap, fmt);
     vfwprintf(stdout, fmt, ap);
     va_end(ap);
     fputwc(L'\n', stdout);
     if (g_log) {
+        fwprintf(g_log, L"[%02d:%02d:%02d] ", t.wHour, t.wMinute, t.wSecond);
         va_start(ap, fmt);
         vfwprintf(g_log, fmt, ap);
         va_end(ap);
         fputwc(L'\n', g_log);
         fflush(g_log);
+    }
+}
+
+// launcher.log keeps earlier launches (each starts with a dated line) up to about 1 MB.
+static void OpenLog(const std::wstring& path) {
+    WIN32_FILE_ATTRIBUTE_DATA data;
+    const bool big = GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &data) &&
+                     (data.nFileSizeHigh || data.nFileSizeLow > 1024 * 1024);
+    _wfopen_s(&g_log, path.c_str(), big ? L"w" : L"a");
+    if (g_log) {
+        SYSTEMTIME t;
+        GetLocalTime(&t);
+        fwprintf(g_log, L"\n===== %04d-%02d-%02d %02d:%02d:%02d =====\n", t.wYear, t.wMonth, t.wDay,
+                 t.wHour, t.wMinute, t.wSecond);
     }
 }
 
@@ -76,32 +109,10 @@ static std::wstring SteamVROpenXRJson() {
     return GetFileAttributesW(json.c_str()) != INVALID_FILE_ATTRIBUTES ? json : L"";
 }
 
-// "Key = 1" in a small INI-style file (whitespace and case around the key ignored).
-static bool ReadIniFlag(const std::wstring& path, const char* key, bool dflt = false) {
-    FILE* f = nullptr;
-    if (_wfopen_s(&f, path.c_str(), L"rb") || !f) return dflt;
-    char line[512];
-    bool on = dflt;
-    size_t klen = strlen(key);
-    while (fgets(line, sizeof(line), f)) {
-        char* p = line;
-        while (*p == ' ' || *p == '\t') ++p;
-        if (_strnicmp(p, key, klen)) continue;
-        p += klen;
-        while (*p == ' ' || *p == '\t') ++p;
-        if (*p != '=') continue;
-        ++p;
-        while (*p == ' ' || *p == '\t') ++p;
-        on = *p == '1' || !_strnicmp(p, "true", 4) || !_strnicmp(p, "yes", 3);
-    }
-    fclose(f);
-    return on;
-}
-
-// Fatal setup problem: log it, and show it too (a double-clicked console closes at once).
+// A setup problem: logged, and the exit code says which.
 static int Fail(const std::wstring& msg, int code) {
-    Log(L"ERROR: %ls", msg.c_str());
-    MessageBoxW(nullptr, msg.c_str(), L"EchoXR", MB_OK | MB_ICONERROR);
+    Log(L"ERROR: %ls (exit code %d)", msg.c_str(), code);
+    if (g_log) fclose(g_log);
     return code;
 }
 
@@ -114,20 +125,17 @@ int wmain(int argc, wchar_t** argv) {
 
     std::wstring exe = echoxr::kModdedExe;      // --exe <name> picks another executable in bin\win10
     std::wstring runtimeMode = L"steamvr";      // steamvr | active
-    std::wstring passArgs, relaunchArgs;
+    std::wstring passArgs;
     bool setupOnly = false;                     // --setup-only: do the first-run setup, don't launch
-    bool checkUpdate = false, afterUpdate = false;
     for (int i = 1; i < argc; ++i) {
         std::wstring a = argv[i];
-        if (a == L"--check-update") { checkUpdate = true; continue; }   // check GitHub now
-        if (a == L"--after-update") { afterUpdate = true; continue; }   // started by the updater
-        relaunchArgs += L" \"" + a + L"\"";
-        if (a == L"--exe" && i + 1 < argc) { exe = argv[++i]; relaunchArgs += L" \"" + exe + L"\""; continue; }
-        if (a == L"--runtime" && i + 1 < argc) { runtimeMode = argv[++i]; relaunchArgs += L" \"" + runtimeMode + L"\""; continue; }
+        if (a == L"--exe" && i + 1 < argc) { exe = argv[++i]; continue; }
+        if (a == L"--runtime" && i + 1 < argc) { runtimeMode = argv[++i]; continue; }
         if (a == L"--setup-only") { setupOnly = true; continue; }
         passArgs += L" \"" + a + L"\"";
     }
-    _wfopen_s(&g_log, (xrDir + L"launcher.log").c_str(), afterUpdate ? L"a" : L"w");
+    if (echoxr::IsDir(xrDir))
+        OpenLog(xrDir + L"launcher.log");
 
     Log(L"EchoXR launcher %hs", ECHOXR_VERSION);
     const char* (CDECL* wineVersion)() = nullptr;
@@ -135,25 +143,18 @@ int wmain(int argc, wchar_t** argv) {
         wineVersion = (const char* (CDECL*)())GetProcAddress(ntdll, "wine_get_version");
     std::wstring gameDir = dir.substr(0, dir.size() - 1);
     if (!echoxr::Exists(dir + L"echovr.exe"))
-        return Fail(L"EchoXR.exe has to sit in Echo VR's bin\\win10 folder, next to echovr.exe.\n\n"
-                    L"Copy EchoXR.exe and the EchoXR folder into ...\\ready-at-dawn-echo-arena\\bin\\win10\\.", 2);
-    if (!echoxr::Exists(xrDir + L"LibOVRRT64_1.dll"))
-        return Fail(L"EchoXR\\LibOVRRT64_1.dll is missing. Copy the whole EchoXR folder next to EchoXR.exe.", 2);
-
-    // a newer release on GitHub? (updater.h; not under Wine, which has no tar.exe)
-    if (!afterUpdate && !wineVersion && (checkUpdate || ReadIniFlag(xrDir + L"echoxr.ini", "CheckForUpdates", true)) &&
-        updater::CheckAndUpdate(dir, xrDir, checkUpdate, relaunchArgs + L" --after-update", Log)) {
-        Log(L"update: started the new EchoXR.exe");
-        if (g_log) fclose(g_log);
-        return 0;
-    }
+        return Fail(L"EchoXR.exe has to sit in Echo VR's bin\\win10 folder, next to echovr.exe "
+                    L"(with the EchoXR folder next to it)", kNotInGameFolder);
+    if (!echoxr::Exists(xrDir + L"LibOVRRT64_1.dll") || !echoxr::Exists(xrDir + L"openxr_loader.dll"))
+        return Fail(L"EchoXR\\LibOVRRT64_1.dll or EchoXR\\openxr_loader.dll is missing: copy the whole "
+                    L"EchoXR folder next to EchoXR.exe", kRuntimeMissing);
 
     // first run: the patched game executable Echo needs to accept this runtime
     if (!_wcsicmp(exe.c_str(), echoxr::kModdedExe) && !echoxr::Exists(dir + exe)) {
         std::wstring err;
         size_t off = 0;
         if (!echoxr::MakeOpenXRExe(gameDir, err, &off))
-            return Fail(L"Couldn't create echovr_openxr.exe: " + err + L".", 4);
+            return Fail(L"Couldn't create echovr_openxr.exe: " + err, kSetupFailed);
         Log(L"created %ls (patched copy of echovr.exe, file offset 0x%zx)", echoxr::kModdedExe, off);
     }
     if (setupOnly) {
@@ -183,6 +184,23 @@ int wmain(int argc, wchar_t** argv) {
         }
     }
 
+    // Under Proton: OpenXR on for this launch, even with no OpenVR runtime.
+    if (wineVersion) {
+        bool didSetUp = false;
+        if (!protonvr::EnsureOpenXR(Log, didSetUp))
+            return Fail(L"OpenXR isn't available in this Proton prefix (see above)", kNoOpenXR);
+        // Proton's OpenVR values are missing then; keep DXVK from waiting for them.
+        if (didSetUp)
+            SetEnvironmentVariableW(L"DXVK_NO_VR", L"1");
+    }
+
+    // The runtime answers, and has a headset.
+    switch (preflight::Check(xrDir + L"openxr_loader.dll", Log)) {
+    case preflight::NoRuntime: return Fail(L"no OpenXR runtime answered", kNoOpenXR);
+    case preflight::NoHeadset: return Fail(L"the OpenXR runtime has no headset", kNoHeadset);
+    case preflight::Ok: break;
+    }
+
     // 1. headset-present signal for ovr_Detect()
     HANDLE hmd = CreateEventW(nullptr, TRUE, TRUE, L"OculusHMDConnected");
     DWORD evErr = GetLastError();
@@ -206,8 +224,9 @@ int wmain(int argc, wchar_t** argv) {
     PROCESS_INFORMATION pi = {};
     std::wstring mutableCmd = cmd;
     if (!CreateProcessW(nullptr, &mutableCmd[0], nullptr, nullptr, FALSE, 0, nullptr, dir.c_str(), &si, &pi)) {
-        Log(L"ERROR: could not start %ls (error %lu)", exe.c_str(), GetLastError());
-        return 3;
+        const DWORD err = GetLastError();
+        if (hmd) CloseHandle(hmd);
+        return Fail(L"couldn't start " + exe + L" (error " + std::to_wstring(err) + L")", kStartFailed);
     }
 
     WaitForSingleObject(pi.hProcess, INFINITE);

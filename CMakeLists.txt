@@ -141,7 +141,8 @@ target_compile_definitions(EchoXR PRIVATE UNICODE _UNICODE ECHOXR_VERSION="${ECH
 target_compile_options(EchoXR PRIVATE /EHsc)
 # No console window: everything EchoXR.exe has to say goes to EchoXR\launcher.log.
 target_link_options(EchoXR PRIVATE /SUBSYSTEM:WINDOWS /ENTRY:wmainCRTStartup)
-target_link_libraries(EchoXR PRIVATE advapi32 shell32 user32 winhttp)
+target_include_directories(EchoXR PRIVATE ${openxr_sdk_SOURCE_DIR}/include)
+target_link_libraries(EchoXR PRIVATE advapi32 shell32 user32)
 
 # --- Tests (run on Windows, or under Wine) ------------------------------------------------
 enable_testing()
