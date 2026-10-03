@@ -40,6 +40,19 @@ jobs:
       - name: Test
         run: ctest --preset windows-msvc
 
+      # Job logs need a GitHub login; annotations don't. On a failure, the test log goes
+      # into one, readable from the checks API.
+      - name: Test log as an annotation
+        if: failure()
+        shell: pwsh
+        run: |
+          $log = Get-Content build/windows-msvc/Testing/Temporary/LastTest.log -Raw -ErrorAction SilentlyContinue
+          if ($log) {
+            if ($log.Length -gt 60000) { $log = $log.Substring($log.Length - 60000) }
+            $esc = $log.Replace('%', '%25').Replace("`r", '').Replace("`n", '%0A')
+            Write-Output "::error title=ctest::$esc"
+          }
+
       - name: Package
         run: python tools/make_release.py
 

@@ -5,6 +5,7 @@
 #include <windows.h>
 #include <OVR_CAPI.h>
 #include <cstdio>
+#include <string>
 
 typedef ovrResult (*Initialize)(const ovrInitParams*);
 typedef void (*Shutdown)();
@@ -16,7 +17,13 @@ int main(int argc, char** argv)
 		std::printf("usage: smoke_no_runtime <LibOVRRT64_1.dll>\n");
 		return 2;
 	}
-	HMODULE dll = LoadLibraryExA(argv[1], nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
+	// LOAD_WITH_ALTERED_SEARCH_PATH (openxr_loader.dll sits next to the runtime) needs
+	// backslashes; CMake hands over forward slashes.
+	std::string path = argv[1];
+	for (char& c : path)
+		if (c == '/')
+			c = '\\';
+	HMODULE dll = LoadLibraryExA(path.c_str(), nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
 	if (!dll)
 	{
 		std::printf("FAIL: couldn't load %s (error %lu)\n", argv[1], GetLastError());
