@@ -12,6 +12,10 @@
 //
 // echoxr.ini: CheckForUpdates = 0 turns this off. --check-update checks now.
 // ECHOXR_UPDATE=yes answers the question without asking (scripted installs, tests).
+//
+// Hand tracking (EchoXR Hands) is released on its own, from heisthecat31/EchoXR-Hands
+// (CheckHands below). Its zip unpacks to EchoXR\Hands\, and EchoXR\Hands\version.txt
+// says which release is installed.
 #include <windows.h>
 #include <winhttp.h>
 #include <string>
@@ -27,6 +31,8 @@ namespace updater {
 static const wchar_t* kHost = L"api.github.com";
 static const wchar_t* kPath = L"/repos/heisthecat31/EchoXR/releases/latest";
 static const char*    kAssetPrefix = "https://github.com/heisthecat31/EchoXR/releases/download/";
+static const wchar_t* kHandsPath = L"/repos/heisthecat31/EchoXR-Hands/releases/latest";
+static const char*    kHandsAssetPrefix = "https://github.com/heisthecat31/EchoXR-Hands/releases/download/";
 
 typedef void (*LogFn)(const wchar_t* fmt, ...);
 
@@ -151,6 +157,49 @@ inline void DeleteTree(const std::wstring& dir) {
     RemoveDirectoryW(dir.c_str());
 }
 
+// The first release asset under prefix whose name contains want and ends in .zip.
+inline std::string FindZip(const std::string& json, const char* prefix, const char* want) {
+    for (size_t pos = 0;;) {
+        size_t at = 0;
+        std::string u = JsonString(json, "browser_download_url", pos, &at);
+        if (u.empty()) return "";
+        pos = at;
+        if (u.compare(0, strlen(prefix), prefix) == 0 && u.find(want) != std::string::npos &&
+            u.size() > 4 && u.compare(u.size() - 4, 4, ".zip") == 0) return u;
+    }
+}
+
+// Downloads zipUrl and unpacks it into %TEMP%\<name> with Windows' tar.exe; check
+// names a file the zip has to contain. On success outUnpack is that folder (the
+// caller deletes it); on failure nothing is left behind.
+inline bool FetchZip(const std::string& zipUrl, const std::wstring& name, const std::wstring& check,
+                     std::wstring& outUnpack, LogFn log) {
+    wchar_t tmp[MAX_PATH];
+    GetTempPathW(MAX_PATH, tmp);
+    std::wstring zip = std::wstring(tmp) + name + L".zip", unpack = std::wstring(tmp) + name;
+    std::string data;
+    if (!HttpsGet(Widen(zipUrl), data, 30000) || data.size() < 1024 || data.compare(0, 2, "PK") != 0) {
+        log(L"update: download failed (%hs)", zipUrl.c_str());
+        return false;
+    }
+    if (echoxr::WriteAll(zip, data.data(), data.size())) { log(L"update: couldn't save the download"); return false; }
+    DeleteTree(unpack);
+    CreateDirectoryW(unpack.c_str(), nullptr);
+    DWORD code = 1;
+    wchar_t sys[MAX_PATH];
+    GetSystemDirectoryW(sys, MAX_PATH);
+    bool ok = RunWait(L"\"" + std::wstring(sys) + L"\\tar.exe\" -xf \"" + zip + L"\" -C \"" + unpack + L"\"", code) &&
+              code == 0 && echoxr::Exists(unpack + L"\\" + check);
+    DeleteFileW(zip.c_str());
+    if (!ok) {
+        log(L"update: the download isn't a valid release (tar exit %lu, no %ls)", code, check.c_str());
+        DeleteTree(unpack);
+        return false;
+    }
+    outUnpack = unpack;
+    return true;
+}
+
 // Returns true when an update was installed and the new EchoXR.exe was started
 // (the caller then exits). dir = bin\win10 with a trailing backslash.
 inline bool CheckAndUpdate(const std::wstring& dir, const std::wstring& xrDir, bool force, const std::wstring& relaunchArgs, LogFn log) {
@@ -174,21 +223,9 @@ inline bool CheckAndUpdate(const std::wstring& dir, const std::wstring& xrDir, b
     if (tag.empty()) { log(L"update: no release information"); return false; }
     if (!Newer(tag, ECHOXR_VERSION)) { log(L"update: up to date (%hs, latest %hs)", ECHOXR_VERSION, tag.c_str()); return false; }
 
-    // The same package as this install: EchoXR-v* (EchoXR and hand tracking) when the finger
-    // bridge is here, else EchoXR-OpenXR-v* (the translation layer only), so an update never
-    // adds hand tracking someone left out. Releases before the split only have EchoXR-v*.
-    bool hands = GetFileAttributesW((xrDir + L"Hands\\EchoXRHands.exe").c_str()) != INVALID_FILE_ATTRIBUTES;
-    const char* want[2] = { hands ? "/EchoXR-v" : "/EchoXR-OpenXR-v", "/EchoXR-v" };
-    std::string zipUrl;
-    for (int pass = 0; pass < (hands ? 1 : 2) && zipUrl.empty(); ++pass)
-        for (size_t pos = 0;;) {
-            size_t at = 0;
-            std::string u = JsonString(json, "browser_download_url", pos, &at);
-            if (u.empty()) break;
-            pos = at;
-            if (u.compare(0, strlen(kAssetPrefix), kAssetPrefix) == 0 && u.find(want[pass]) != std::string::npos &&
-                u.size() > 4 && u.compare(u.size() - 4, 4, ".zip") == 0) { zipUrl = u; break; }
-        }
+    // EchoXR-v* is EchoXR alone; hand tracking updates from its own releases (CheckHands),
+    // and an update here leaves an installed EchoXR\Hands\ as it is.
+    std::string zipUrl = FindZip(json, kAssetPrefix, "/EchoXR-v");
     if (zipUrl.empty()) { log(L"update: %hs has no EchoXR zip", tag.c_str()); return false; }
     log(L"update: %hs is available (this is %hs)", tag.c_str(), ECHOXR_VERSION);
 
@@ -201,24 +238,11 @@ inline bool CheckAndUpdate(const std::wstring& dir, const std::wstring& xrDir, b
         if (!yes) { log(L"update: declined -- asking again tomorrow"); return false; }
     }
 
-    wchar_t tmp[MAX_PATH];
-    GetTempPathW(MAX_PATH, tmp);
-    std::wstring zip = std::wstring(tmp) + L"EchoXR-update.zip", unpack = std::wstring(tmp) + L"EchoXR-update";
-    std::string data;
-    if (!HttpsGet(Widen(zipUrl), data, 30000) || data.size() < 1024 || data.compare(0, 2, "PK") != 0) {
-        log(L"update: download failed"); MessageBoxW(nullptr, L"The update couldn't be downloaded. Starting the current version.", L"EchoXR update", MB_OK | MB_ICONWARNING);
-        return false;
-    }
-    if (echoxr::WriteAll(zip, data.data(), data.size())) { log(L"update: couldn't save the download"); return false; }
-    DeleteTree(unpack);
-    CreateDirectoryW(unpack.c_str(), nullptr);
-    DWORD code = 1;
-    wchar_t sys[MAX_PATH];
-    GetSystemDirectoryW(sys, MAX_PATH);
-    if (!RunWait(L"\"" + std::wstring(sys) + L"\\tar.exe\" -xf \"" + zip + L"\" -C \"" + unpack + L"\"", code) || code != 0 ||
-        !echoxr::Exists(unpack + L"\\EchoXR.exe") || !echoxr::Exists(unpack + L"\\EchoXR\\LibOVRRT64_1.dll")) {
-        log(L"update: the download isn't a valid EchoXR release (tar exit %lu)", code);
-        DeleteTree(unpack); DeleteFileW(zip.c_str());
+    std::wstring unpack;
+    if (!FetchZip(zipUrl, L"EchoXR-update", L"EchoXR\\LibOVRRT64_1.dll", unpack, log) ||
+        !echoxr::Exists(unpack + L"\\EchoXR.exe")) {
+        if (!unpack.empty()) DeleteTree(unpack);
+        MessageBoxW(nullptr, L"The update couldn't be installed. Starting the current version.", L"EchoXR update", MB_OK | MB_ICONWARNING);
         return false;
     }
 
@@ -226,13 +250,13 @@ inline bool CheckAndUpdate(const std::wstring& dir, const std::wstring& xrDir, b
     std::wstring self = dir + L"EchoXR.exe", old = dir + L"EchoXR.exe.old";
     if (!MoveFileExW(self.c_str(), old.c_str(), MOVEFILE_REPLACE_EXISTING)) {
         log(L"update: couldn't move EchoXR.exe aside (error %lu)", GetLastError());
-        DeleteTree(unpack); DeleteFileW(zip.c_str());
+        DeleteTree(unpack);
         return false;
     }
     int n = 0;
     std::wstring target = dir.substr(0, dir.size() - 1);
     bool ok = CopyTree(unpack, target, log, n);
-    DeleteTree(unpack); DeleteFileW(zip.c_str());
+    DeleteTree(unpack);
     if (!echoxr::Exists(self)) {   // never leave the player without a launcher
         MoveFileExW(old.c_str(), self.c_str(), MOVEFILE_REPLACE_EXISTING);
         log(L"update: failed -- kept the current version");
@@ -249,6 +273,74 @@ inline bool CheckAndUpdate(const std::wstring& dir, const std::wstring& xrDir, b
     }
     CloseHandle(pi.hThread);
     CloseHandle(pi.hProcess);
+    return true;
+}
+
+// The installed EchoXR Hands release (EchoXR\Hands\version.txt), "" when unknown.
+inline std::string HandsVersion(const std::wstring& xrDir) {
+    std::string v = echoxr::ReadAll(xrDir + L"Hands\\version.txt");
+    while (!v.empty() && (v.back() == '\r' || v.back() == '\n' || v.back() == ' ')) v.pop_back();
+    return v;
+}
+
+// Hand tracking from the latest heisthecat31/EchoXR-Hands release. When EchoXR\Hands\
+// is missing (hand tracking switched on with AutoStartHands = 1, nothing installed),
+// it's downloaded straight away. When it's installed, the release is checked at most
+// once every 20 hours (EchoXR\hands_update_check.txt; force = now), and a newer one is
+// offered like an EchoXR update. The caller makes sure the bridge and the settings
+// window aren't running, since their files get replaced. Returns true when hand
+// tracking was installed or updated.
+inline bool CheckHands(const std::wstring& dir, const std::wstring& xrDir, bool force, LogFn log) {
+    bool installed = echoxr::Exists(xrDir + L"Hands\\EchoXRHands.exe");
+    std::wstring stamp = xrDir + L"hands_update_check.txt";
+    FILETIME ft; GetSystemTimeAsFileTime(&ft);
+    ULONGLONG nowSec = ((((ULONGLONG)ft.dwHighDateTime) << 32) | ft.dwLowDateTime) / 10000000ULL;
+    if (installed && !force) {
+        ULONGLONG lastSec = _strtoui64(echoxr::ReadAll(stamp).c_str(), nullptr, 10);
+        if (lastSec && nowSec - lastSec < 20ULL * 3600) return false;
+    }
+    std::string stampText = std::to_string(nowSec);
+    echoxr::WriteAll(stamp, stampText.data(), stampText.size());
+
+    std::string json;
+    if (!HttpsGet(std::wstring(L"https://") + kHost + kHandsPath, json, installed ? 4000 : 10000)) {
+        log(L"hands update: no EchoXR Hands release found on GitHub (or GitHub unreachable) -- skipped");
+        return false;
+    }
+    std::string tag = JsonString(json, "tag_name");
+    if (tag.empty()) { log(L"hands update: no EchoXR Hands release found"); return false; }
+    std::string have = installed ? HandsVersion(xrDir) : "";
+    if (installed && !have.empty() && !Newer(tag, have)) {
+        log(L"hands update: up to date (%hs, latest %hs)", have.c_str(), tag.c_str());
+        return false;
+    }
+    std::string zipUrl = FindZip(json, kHandsAssetPrefix, "/EchoXR-Hands-v");
+    if (zipUrl.empty()) { log(L"hands update: %hs has no EchoXR-Hands zip", tag.c_str()); return false; }
+
+    if (installed) {
+        log(L"hands update: %hs is available (installed: %hs)", tag.c_str(), have.empty() ? "unknown" : have.c_str());
+        wchar_t env[8] = {};
+        bool yes = GetEnvironmentVariableW(L"ECHOXR_UPDATE", env, 8) && !_wcsicmp(env, L"yes");
+        if (!yes) {
+            std::wstring q = L"EchoXR Hands " + Widen(tag) + L" is available (you have " +
+                             (have.empty() ? std::wstring(L"an older version") : Widen(have)) +
+                             L").\n\nDownload and install it now? It takes a few seconds, then Echo starts as usual.";
+            yes = MessageBoxW(nullptr, q.c_str(), L"EchoXR Hands update", MB_YESNO | MB_ICONINFORMATION | MB_SETFOREGROUND) == IDYES;
+            if (!yes) { log(L"hands update: declined -- asking again tomorrow"); return false; }
+        }
+    } else {
+        log(L"hand tracking is on but not installed -- downloading EchoXR Hands %hs", tag.c_str());
+    }
+
+    std::wstring unpack;
+    if (!FetchZip(zipUrl, L"EchoXR-Hands-update", L"EchoXR\\Hands\\EchoXRHands.exe", unpack, log)) return false;
+    DeleteFileW((xrDir + L"Hands\\version.txt").c_str());   // the zip brings the new one
+    int n = 0;
+    bool ok = CopyTree(unpack, dir.substr(0, dir.size() - 1), log, n);
+    DeleteTree(unpack);
+    if (HandsVersion(xrDir).empty())   // a zip without version.txt: remember the tag
+        echoxr::WriteAll(xrDir + L"Hands\\version.txt", tag.data(), tag.size());
+    log(L"hands update: installed EchoXR Hands %hs (%d files%ls)", tag.c_str(), n, ok ? L"" : L", some failed");
     return true;
 }
 

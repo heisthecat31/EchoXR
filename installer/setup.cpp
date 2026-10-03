@@ -76,6 +76,7 @@ static const Item kItems[] = {
     { C_BRIDGE, IDR_BINDINGS,  L"EchoXR\\Hands\\htv_bindings_knuckles.json" },
     { C_BRIDGE, IDR_OPENVR,    L"EchoXR\\Hands\\openvr_api.dll" },
     { C_BRIDGE, IDR_FAKEINDEX, L"EchoXR\\Hands\\fake_index.py" },
+    { C_BRIDGE, IDR_HANDSVER,  L"EchoXR\\Hands\\version.txt" },   // the EchoXR Hands release, for EchoXR.exe's updates
     { C_XR,     IDR_LAUNCHER,  L"EchoXR.exe" },
     { C_XR,     IDR_OVRRT,     L"EchoXR\\LibOVRRT64_1.dll" },
     { C_XR,     IDR_XRLOADER,  L"EchoXR\\openxr_loader.dll" },

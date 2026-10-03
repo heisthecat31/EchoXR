@@ -4,8 +4,10 @@
 //
 // It lives in bin\win10 next to echovr.exe and starts echovr_openxr.exe by default
 // (--exe picks another). First it sets up what's missing: echovr_openxr.exe, a patched
-// copy of echovr.exe (echoxr_common.h), and -- from a release zip's
-// EchoXR\Hands\install\ -- the hand tracking plugin and plugin loader (SetupHands).
+// copy of echovr.exe (echoxr_common.h), and -- from EchoXR\Hands\install\ -- the hand
+// tracking plugin and plugin loader (SetupHands). Hand tracking is its own release
+// (heisthecat31/EchoXR-Hands): with "AutoStartHands = 1" it's downloaded when missing
+// and offered when there's a newer one (updater::CheckHands).
 // Then it does three things before launching:
 //   1. holds the "OculusHMDConnected" event. Echo's LibOVR shim calls ovr_Detect(),
 //      which opens this event to decide whether a headset is present; the Oculus
@@ -210,7 +212,39 @@ int wmain(int argc, wchar_t** argv) {
             return Fail(L"Couldn't create echovr_openxr.exe: " + err + L".", 4);
         Log(L"created %ls (patched copy of echovr.exe, file offset 0x%zx)", echoxr::kModdedExe, off);
     }
-    echoxr::SetupHands(gameDir, xrDir + L"Hands\\install\\", Log);   // release zip: plugin + loader
+    // EchoXR\echoxr.ini, written once and never shipped, so an unzip or update never
+    // overwrites the player's choices. Hand tracking starts switched on when it's here.
+    std::wstring bridge = xrDir + L"Hands\\EchoXRHands.exe";
+    std::wstring settingsExe = xrDir + L"Hands\\EchoXRSettings.exe";
+    if (!echoxr::Exists(xrDir + L"echoxr.ini")) {
+        std::string ini = std::string("# EchoXR launcher settings\r\n"
+                                      "# 1 = EchoXR.exe also runs the hand tracking bridge (EchoXR\\Hands\\EchoXRHands.exe)\r\n"
+                                      "#     while Echo runs, and downloads EchoXR Hands first if it isn't installed\r\n"
+                                      "AutoStartHands = ") + (echoxr::Exists(bridge) ? "1" : "0") + "\r\n"
+                          "# 1 = EchoXR.exe also opens the hand tracking settings window (EchoXRSettings.exe)\r\n"
+                          "AutoStartSettings = 0\r\n"
+                          "# 0 = don't check GitHub for EchoXR and EchoXR Hands updates\r\n"
+                          "CheckForUpdates = 1\r\n";
+        echoxr::WriteAll(xrDir + L"echoxr.ini", ini.data(), ini.size());
+        Log(L"created EchoXR\\echoxr.ini (AutoStartHands = %ls)", echoxr::Exists(bridge) ? L"1" : L"0");
+    }
+    bool hands = ReadIniFlag(xrDir + L"echoxr.ini", "AutoStartHands");
+
+    // hand tracking from its own release: installed when switched on but missing, else
+    // checked for updates like EchoXR. Not while the bridge or settings window runs
+    // (their files would be replaced), and not under Wine (no tar.exe).
+    if (hands) {
+        bool missing = !echoxr::Exists(bridge);
+        if (wineVersion) {
+            if (missing) Log(L"hand tracking: not installed -- unzip EchoXR-Hands-v*.zip from "
+                             L"github.com/heisthecat31/EchoXR-Hands/releases into bin/win10");
+        } else if (IsRunning(L"EchoXRHands.exe") || IsRunning(L"EchoXRSettings.exe")) {
+            Log(L"hands update: the bridge or settings window is running -- skipped");
+        } else if (missing || checkUpdate || ReadIniFlag(xrDir + L"echoxr.ini", "CheckForUpdates", true)) {
+            updater::CheckHands(dir, xrDir, checkUpdate, Log);
+        }
+    }
+    echoxr::SetupHands(gameDir, xrDir + L"Hands\\install\\", Log);   // plugin + loader
     if (setupOnly) {
         Log(L"--setup-only: done, not launching");
         if (g_log) fclose(g_log);
@@ -268,18 +302,6 @@ int wmain(int argc, wchar_t** argv) {
     // 3. hand tracking: EchoXR\echoxr.ini "AutoStartHands = 1" (set by the installer)
     //    starts the finger bridge next to Echo, restarts it if it drops out (e.g. SteamVR
     //    wasn't up yet), and closes it when Echo exits.
-    std::wstring bridge = xrDir + L"Hands\\EchoXRHands.exe";
-    if (!echoxr::Exists(xrDir + L"echoxr.ini") && echoxr::Exists(bridge)) {
-        // release zip: no ini shipped, so an unzip never overwrites the player's choice
-        const char ini[] = "# EchoXR launcher settings\r\n"
-                           "# 1 = EchoXR.exe also runs EchoXR\\Hands\\EchoXRHands.exe while Echo runs\r\n"
-                           "AutoStartHands = 1\r\n"
-                           "# 1 = EchoXR.exe also opens the hand tracking settings window (EchoXRSettings.exe)\r\n"
-                           "AutoStartSettings = 0\r\n";
-        echoxr::WriteAll(xrDir + L"echoxr.ini", ini, sizeof(ini) - 1);
-        Log(L"hand tracking: created EchoXR\\echoxr.ini (AutoStartHands = 1)");
-    }
-    bool hands = ReadIniFlag(xrDir + L"echoxr.ini", "AutoStartHands");
     HANDLE hb = nullptr;
     DWORD lastStart = 0;
     int starts = 0;
@@ -287,12 +309,11 @@ int wmain(int argc, wchar_t** argv) {
         Log(L"hand tracking: EchoXRHands.exe is already running");
         hands = false;
     } else if (hands && GetFileAttributesW(bridge.c_str()) == INVALID_FILE_ATTRIBUTES) {
-        Log(L"hand tracking: %ls is missing -- reinstall EchoXR Hands", bridge.c_str());
+        Log(L"hand tracking: %ls is missing -- it couldn't be downloaded (see above)", bridge.c_str());
         hands = false;
     }
     // 4. EchoXR\echoxr.ini "AutoStartSettings = 1": the settings window opens with Echo
     //    and is closed (saving any pending change) when Echo exits.
-    std::wstring settingsExe = xrDir + L"Hands\\EchoXRSettings.exe";
     HANDLE hs = nullptr;
     DWORD settingsPid = 0;
     if (ReadIniFlag(xrDir + L"echoxr.ini", "AutoStartSettings")) {

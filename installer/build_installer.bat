@@ -2,6 +2,7 @@
 rem Builds out\EchoXRSetup.exe: EchoXR (OpenXR runtime + launcher) and EchoXR Hands in one installer.
 rem   build_installer.bat          build what's missing, then the installer
 rem   build_installer.bat --all    rebuild the plugin, the bridge and EchoXR too
+rem Hand tracking is built from ..\..\EchoXR-Hands (github.com/heisthecat31/EchoXR-Hands).
 setlocal
 set "VARS_BAT="
 set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
@@ -20,8 +21,13 @@ if not defined VSCMD_ARG_TGT_ARCH call "%VARS_BAT%" >nul
 cd /d "%~dp0"
 set "ECHO_BIN=C:\Oculus\Games\Software\Software\ready-at-dawn-echo-arena\bin\win10"
 
-rem hand tracking plugin + bridge (quick, always rebuilt)
-call ..\build.bat
+rem hand tracking plugin + bridge + settings (quick, always rebuilt), from the EchoXR-Hands
+rem repository checked out next to this one; setup.rc reads its out\ folder
+if not exist ..\..\EchoXR-Hands\build.bat (
+    echo [ERROR] EchoXR Hands not found: clone github.com/heisthecat31/EchoXR-Hands next to this repository, as EchoXR-Hands.
+    exit /b 1
+)
+call ..\..\EchoXR-Hands\build.bat
 if %ERRORLEVEL% neq 0 exit /b %ERRORLEVEL%
 cd /d "%~dp0"
 
@@ -48,6 +54,9 @@ if not exist stage\dbgcore.dll (
     echo [ERROR] Put the plugin loader at installer\stage\dbgcore.dll ^(or set ECHO_BIN in this script^).
     exit /b 1
 )
+
+rem the EchoXR Hands release this installer carries (EchoXR.exe compares it with GitHub's)
+copy /Y ..\..\EchoXR-Hands\VERSION stage\hands_version.txt >nul
 
 rem third-party notices shipped with EchoXR
 > stage\THIRD_PARTY_NOTICES.txt (

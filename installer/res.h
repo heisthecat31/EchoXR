@@ -15,3 +15,4 @@
 #define IDR_LOADER       311   // dbgcore.dll (plugin loader)
 #define IDR_NOTICES      312   // THIRD_PARTY_NOTICES.txt
 #define IDR_SETTINGS     313   // EchoXRSettings.exe (settings window)
+#define IDR_HANDSVER     314   // version.txt: the EchoXR Hands release (EchoXR-Hands/VERSION)
