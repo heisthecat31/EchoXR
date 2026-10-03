@@ -1032,7 +1032,7 @@ OVR_PUBLIC_FUNCTION(ovrResult) ovr_EndFrame(ovrSession session, long long frameI
 				{
 					// RenderPose is the first member that's differently aligned
 					view.pose = XR::Posef(layer->EyeMatrix.RenderPose[i]);
-					view.fov = XR::Matrix4f(layer->EyeMatrix.Matrix[i]);
+					view.fov = XR::Matrix4f(layer->EyeMatrix.Matrix[i]).ToXrFov();
 				}
 				else
 				{
@@ -1041,7 +1041,7 @@ OVR_PUBLIC_FUNCTION(ovrResult) ovr_EndFrame(ovrSession session, long long frameI
 					// The Climb specifies an invalid fov in the first frame, ignore the layer
 					XR::FovPort Fov(layer->EyeFov.Fov[i]);
 					if (Fov.GetMaxSideTan() > 0.0f)
-						view.fov = Fov;
+						view.fov = Fov.ToXrFov();
 					else
 						break;
 				}

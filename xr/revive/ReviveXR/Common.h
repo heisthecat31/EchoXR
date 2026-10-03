@@ -66,7 +66,7 @@ void EchoXR_Log(const char* fmt, ...);
 #define XR_FUNCTION(instance, func) \
 	static PFN_xr##func func = nullptr; \
 	if (!func) \
-		CHK_XR(xrGetInstanceProcAddr(instance, "xr" #func, (PFN_xrVoidFunction*)&##func));
+		CHK_XR(xrGetInstanceProcAddr(instance, "xr" #func, (PFN_xrVoidFunction*)&func));
 
 ovrResult ResultToOvrResult(XrResult error);
 XrTime AbsTimeToXrTime(XrInstance instance, double absTime);

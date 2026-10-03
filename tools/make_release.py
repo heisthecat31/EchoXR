@@ -1,10 +1,13 @@
-"""Builds the release into out/release/:
+"""Packages a release into <build>/release/:
 
-    EchoXR-OpenXR-v<version>.zip   Echo on SteamVR through OpenXR: the launcher and the
-                                   OpenXR translation layer
+    EchoXR-OpenXR-v<version>.zip          Echo through OpenXR: the launcher and the runtime
+    EchoXR-OpenXR-v<version>.zip.sha256   its SHA-256, as `sha256sum` writes it
 
-    python tools/make_release.py              build, then package
-    python tools/make_release.py --no-build   package what's already built (xr/out)
+    python tools/make_release.py                      package the default build
+    python tools/make_release.py --build-dir <dir>    package another CMake build tree
+
+The default build tree is build/windows-msvc on Windows and build/cross-clang-cl
+elsewhere (the CMake presets). Build it first: cmake --build --preset <name>.
 
 The zip unpacks into Echo VR's bin\\win10 folder, as EchoXR.exe plus one EchoXR\\ folder:
 
@@ -13,24 +16,35 @@ The zip unpacks into Echo VR's bin\\win10 folder, as EchoXR.exe plus one EchoXR\
                                     echoxr-linux.sh
 
 No game file is included: EchoXR.exe makes echovr_openxr.exe from the player's own
-echovr.exe on first run. echoxr.ini isn't shipped either, so unzipping a newer release
-never resets the player's settings.
+echovr.exe on first run.
 """
+import argparse
+import hashlib
 import os
-import subprocess
 import sys
 import zipfile
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 VERSION = open(os.path.join(ROOT, "VERSION"), encoding="utf-8").read().strip()
 
-# (source relative to ROOT, path inside the zip)
-XR_FILES = [   # the OpenXR translation layer and its launcher
-    ("xr/out/EchoXR.exe",                          "EchoXR.exe"),
-    ("xr/out/LibOVRRT64_1.dll",                    "EchoXR/LibOVRRT64_1.dll"),
-    ("xr/out/openxr_loader.dll",                   "EchoXR/openxr_loader.dll"),
-    ("xr/out/THIRD_PARTY_NOTICES.txt",             "EchoXR/THIRD_PARTY_NOTICES.txt"),
-    ("linux/echoxr-linux.sh",                      "EchoXR/echoxr-linux.sh"),
+# (source relative to the build tree's out/ or, with "@", to ROOT; path inside the zip)
+XR_FILES = [
+    ("EchoXR.exe",              "EchoXR.exe"),
+    ("LibOVRRT64_1.dll",        "EchoXR/LibOVRRT64_1.dll"),
+    ("openxr_loader.dll",       "EchoXR/openxr_loader.dll"),
+    ("@linux/echoxr-linux.sh",  "EchoXR/echoxr-linux.sh"),
+]
+
+# Licences of what the three binaries contain (relative to the build tree, or "@" ROOT).
+NOTICES = [
+    ("EchoXR's runtime: Revive / ReviveXR (LibreVR) -- MIT License",
+     "@xr/revive/LICENSE"),
+    ("OpenXR SDK and loader (The Khronos Group) -- Apache License 2.0",
+     "_deps/openxr_sdk-src/LICENSES/Apache-2.0.txt"),
+    ("JsonCpp, inside the OpenXR loader -- MIT License / public domain",
+     "_deps/openxr_sdk-src/src/external/jsoncpp/LICENSE"),
+    ("Microsoft Detours -- MIT License",
+     "_deps/detours-src/LICENSE"),
 ]
 
 # --- README text, shared pieces -------------------------------------------------------
@@ -83,32 +97,58 @@ Licences: see EchoXR\\THIRD_PARTY_NOTICES.txt.
 """)
 
 
-def write_zip(path, files, folders, readme):
+
+def source(build, src):
+    return os.path.join(ROOT, src[1:]) if src.startswith("@") else os.path.join(build, "out", src)
+
+
+def notices(build):
+    parts = ["EchoXR third-party notices", ""]
+    for title, src in NOTICES:
+        path = os.path.join(ROOT, src[1:]) if src.startswith("@") else os.path.join(build, src)
+        with open(path, encoding="utf-8", errors="replace") as f:
+            parts += ["==== %s ====" % title, f.read().strip(), ""]
+    return "\n".join(parts)
+
+
+def write_zip(path, build, readme):
     with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as z:
-        # explicit folder entries, so every unzip tool creates EchoXR\ next to EchoXR.exe
-        for d in folders:
-            z.writestr(zipfile.ZipInfo(d), "")
-        for src, dst in files:
-            info = zipfile.ZipInfo.from_file(os.path.join(ROOT, src), dst)
+        # An explicit folder entry, so every unzip tool creates EchoXR\ next to EchoXR.exe,
+        # with permissions that let Linux and macOS open it.
+        folder = zipfile.ZipInfo("EchoXR/")
+        folder.external_attr = (0o40755 << 16) | 0x10
+        z.writestr(folder, "")
+        for src, dst in XR_FILES:
+            info = zipfile.ZipInfo.from_file(source(build, src), dst)
             info.compress_type = zipfile.ZIP_DEFLATED
-            if dst.endswith(".sh"):
-                info.external_attr = 0o100755 << 16      # executable once unzipped on Linux
-            with open(os.path.join(ROOT, src), "rb") as f:
+            exe = dst.endswith((".sh", ".exe"))
+            info.external_attr = (0o100755 if exe else 0o100644) << 16
+            with open(source(build, src), "rb") as f:
                 z.writestr(info, f.read())
-        z.writestr(readme[0], readme[1].format(version="v" + VERSION).replace("\n", "\r\n"))
+        for name, text in (("EchoXR/THIRD_PARTY_NOTICES.txt", notices(build)),
+                           ("EchoXR/README.txt", readme.format(version="v" + VERSION))):
+            info = zipfile.ZipInfo(name, date_time=(2026, 1, 1, 0, 0, 0))
+            info.compress_type = zipfile.ZIP_DEFLATED
+            info.external_attr = 0o100644 << 16
+            z.writestr(info, text.replace("\r\n", "\n").replace("\n", "\r\n"))
 
 
 def main():
-    if "--no-build" not in sys.argv:
-        subprocess.check_call(["cmd", "/c", os.path.join(ROOT, "build.bat")], cwd=ROOT)
-    missing = [src for src, _ in XR_FILES if not os.path.isfile(os.path.join(ROOT, src))]
+    default = "windows-msvc" if os.name == "nt" else "cross-clang-cl"
+    ap = argparse.ArgumentParser(description="Package an EchoXR release from a CMake build tree.")
+    ap.add_argument("--build-dir", default=os.path.join(ROOT, "build", default))
+    build = os.path.abspath(ap.parse_args().build_dir)
+    missing = [source(build, src) for src, _ in XR_FILES if not os.path.isfile(source(build, src))]
     if missing:
-        sys.exit("missing build outputs:\n  " + "\n  ".join(missing))
-    out = os.path.join(ROOT, "out", "release")
+        sys.exit("missing build outputs (build first):\n  " + "\n  ".join(missing))
+    out = os.path.join(build, "release")
     os.makedirs(out, exist_ok=True)
     made = os.path.join(out, "EchoXR-OpenXR-v%s.zip" % VERSION)
-    write_zip(made, XR_FILES, ("EchoXR/",), ("EchoXR/README.txt", README))
-    print("%-60s %8.1f KB" % (os.path.relpath(made, ROOT), os.path.getsize(made) / 1024))
+    write_zip(made, build, README)
+    digest = hashlib.sha256(open(made, "rb").read()).hexdigest()
+    with open(made + ".sha256", "w", newline="\n") as f:
+        f.write("%s  %s\n" % (digest, os.path.basename(made)))
+    print("%s  %.1f KB  sha256 %s" % (made, os.path.getsize(made) / 1024, digest))
 
 
 if __name__ == "__main__":

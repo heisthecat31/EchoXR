@@ -11,6 +11,7 @@ namespace XR {
 		// Inherit constructors
 		using OVR::Recti::Rect;
 		Recti() : OVR::Recti() { }
+		Recti(const OVR::Recti& base) : OVR::Recti(base) { }
 
 		// OpenXR-interop support
 		Recti(const XrRect2Di& s)
@@ -34,6 +35,7 @@ namespace XR {
 		// Inherit constructors
 		using OVR::Vector2f::Vector2;
 		Vector2f() : OVR::Vector2f() { }
+		Vector2f(const OVR::Vector2f& base) : OVR::Vector2f(base) { }
 
 		// OpenXR-interop support
 		Vector2f(const XrVector2f& s)
@@ -57,6 +59,7 @@ namespace XR {
 		// Inherit constructors
 		using OVR::Vector3f::Vector3;
 		Vector3f() : OVR::Vector3f() { }
+		Vector3f(const OVR::Vector3f& base) : OVR::Vector3f(base) { }
 
 		// OpenXR-interop support
 		Vector3f(const XrVector3f& s)
@@ -75,6 +78,7 @@ namespace XR {
 		// Inherit constructors
 		using OVR::Quatf::Quat;
 		Quatf() : OVR::Quatf() { }
+		Quatf(const OVR::Quatf& base) : OVR::Quatf(base) { }
 
 		// OpenXR-interop support
 		Quatf(const XrQuaternionf& s)
@@ -98,6 +102,7 @@ namespace XR {
 		// Inherit constructors
 		using OVR::Posef::Pose;
 		Posef() : OVR::Posef() { }
+		Posef(const OVR::Posef& base) : OVR::Posef(base) { }
 
 		// OpenXR-interop support
 		Posef(const XrPosef& s)
@@ -121,6 +126,7 @@ namespace XR {
 		// Inherit constructors
 		using OVR::FovPort::FovPort;
 		FovPort() : OVR::FovPort() { }
+		FovPort(const OVR::FovPort& base) : OVR::FovPort(base) { }
 
 		// OpenXR-interop support
 		FovPort(const XrFovf& s)
@@ -132,8 +138,9 @@ namespace XR {
 			)
 		{ }
 
-		// Needs to be explicitly converted
-		operator const XrFovf() const
+		// Needs to be explicitly converted (ToXrFov: the OVR base's own conversions make the
+		// operator ambiguous for standard C++ compilers)
+		XrFovf ToXrFov() const
 		{
 			return XrFovf{
 				-atanf(LeftTan),
@@ -141,6 +148,11 @@ namespace XR {
 				atanf(UpTan),
 				-atanf(DownTan)
 			};
+		}
+
+		operator const XrFovf() const
+		{
+			return ToXrFov();
 		}
 	};
 
@@ -150,12 +162,18 @@ namespace XR {
 		// Inherit constructors
 		using OVR::Matrix4f::Matrix4;
 		Matrix4f() : OVR::Matrix4f() { }
+		Matrix4f(const OVR::Matrix4f& base) : OVR::Matrix4f(base) { }
 
-		// Needs to be explicitly converted
-		operator const XrFovf() const
+		// Needs to be explicitly converted (see FovPort::ToXrFov)
+		XrFovf ToXrFov() const
 		{
 			return XR::FovPort((M[1][2] + 1.0f) / M[1][1], (1.0f - M[1][2]) / M[1][1],
-								(1.0f - M[0][2]) / M[0][0], (M[0][2] + 1.0f) / M[0][0]);
+								(1.0f - M[0][2]) / M[0][0], (M[0][2] + 1.0f) / M[0][0]).ToXrFov();
+		}
+
+		operator const XrFovf() const
+		{
+			return ToXrFov();
 		}
 
 #ifndef OVR_EXCLUDE_CAPI_FROM_MATH

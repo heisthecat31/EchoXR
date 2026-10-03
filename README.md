@@ -117,24 +117,30 @@ Nothing here has been run on Linux yet. The open questions are:
 
 ## Building
 
-Everything builds with MSVC (Visual Studio 2026 toolset).
+One CMake build makes all three files, `EchoXR.exe`, `LibOVRRT64_1.dll` and
+`openxr_loader.dll`, into `build/<preset>/out`. Everything links the C runtime statically,
+so players need no Visual C++ redistributable. Every input outside this repository is
+fetched as source at a pinned commit, checked by SHA-256 (see `CMakeLists.txt`).
 
-| command | builds |
+| where | how |
 | --- | --- |
-| `build.bat` or `xr\build_xr.bat` | `xr\out\LibOVRRT64_1.dll`, `openxr_loader.dll`, `EchoXR.exe` and `THIRD_PARTY_NOTICES.txt`. It needs three upstream checkouts plus a patch; [xr/README.md](xr/README.md) has the exact commits and commands |
-| `xr\build_launcher.bat` | just `xr\out\EchoXR.exe` (quick) |
-| `python tools\make_release.py [--no-build]` | `out\release\EchoXR-OpenXR-v<VERSION>.zip` |
-| `python tools\gen_logo.py` | the logo in `logo\` (SVG, PNG, ICO) |
+| Windows | `build.bat` (finds Visual Studio, builds, runs the tests, packages). By hand, from an "x64 Native Tools" prompt: `cmake --preset windows-msvc`, `cmake --build --preset windows-msvc`, `ctest --preset windows-msvc` |
+| macOS or Linux | clang-cl with Microsoft's SDK from [xwin](https://github.com/Jake-Shadle/xwin): install LLVM, lld, CMake and Ninja, then `cargo install xwin --locked` and `xwin --accept-license splat --output ~/.xwin`. Then `cmake --preset cross-clang-cl` and `cmake --build --preset cross-clang-cl` |
+| GitHub Actions | `.github/workflows/build.yml` builds every push with MSVC and keeps the zip as an artifact; a `v*` tag publishes it as a release (a prerelease for `-rc` tags) |
 
-The version number is in `VERSION`. `linux\echoxr-linux.sh` needs no build; the release
-zip ships it as `EchoXR/echoxr-linux.sh`.
+`python tools/make_release.py [--build-dir <dir>]` packages a build into
+`<build>/release/EchoXR-OpenXR-v<VERSION>.zip` plus its `.sha256`, and writes the
+licence notices of everything inside. `python tools/gen_logo.py` makes the logo in
+`logo/`. The version number is in `VERSION`.
 
 | folder | what |
 | --- | --- |
-| `xr/` | EchoXR runtime glue and launcher (`src/`), Revive patch (`patches/`) |
-| `linux/` | Linux launcher script |
+| `xr/revive/` | Revive's OpenXR backend (MIT), vendored from upstream `ab73167` with EchoXR's changes (`xr/revive/UPSTREAM.md`) |
+| `xr/src/` | the runtime's entry point (`xr_main.cpp`) and the launcher |
+| `cmake/` | the clang-cl cross toolchain |
+| `tests/` | tests the build runs |
+| `linux/` | the Linux launcher script (shipped as `EchoXR/echoxr-linux.sh`) |
 | `logo/` | the logo |
-| `third_party/` | Microsoft Detours header (ReviveXR's D3D code) |
 | `tools/` | release packaging, logo generator |
 
 ## Credits and licences

@@ -163,7 +163,7 @@ unsigned int InputManager::SpaceRelationToPoseState(const XrSpaceLocation& locat
 		XR::Vector3f lastav(lastPoseState.AngularVelocity);
 		outPoseState.AngularVelocity = currav;
 		outPoseState.AngularAcceleration = time > lastPoseState.TimeInSeconds ?
-			(currav - lastav) / float(time - lastPoseState.TimeInSeconds) : lastPoseState.AngularAcceleration;
+			(currav - lastav) / float(time - lastPoseState.TimeInSeconds) : OVR::Vector3f(lastPoseState.AngularAcceleration);
 	}
 	else
 	{
@@ -177,7 +177,7 @@ unsigned int InputManager::SpaceRelationToPoseState(const XrSpaceLocation& locat
 		XR::Vector3f lastlv(lastPoseState.LinearVelocity);
 		outPoseState.LinearVelocity = currlv;
 		outPoseState.LinearAcceleration = time > lastPoseState.TimeInSeconds ?
-			(currlv - lastlv) / float(time - lastPoseState.TimeInSeconds) : lastPoseState.LinearAcceleration;
+			(currlv - lastlv) / float(time - lastPoseState.TimeInSeconds) : OVR::Vector3f(lastPoseState.LinearAcceleration);
 	}
 	else
 	{
