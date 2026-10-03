@@ -46,13 +46,17 @@ ovrResult AudioEndPointToGuid(WCHAR* deviceStrBuffer, GUID* deviceGuid)
 	}
 
 	PROPVARIANT pv;
+	PropVariantInit(&pv);
 	hr = pPropertyStore->GetValue(PKEY_AudioEndpoint_GUID, &pv);
 	if (FAILED(hr))
 	{
 		return ovrError_AccessDenied;
 	}
 
-	hr = IIDFromString(pv.pwszVal, deviceGuid);
+	// EchoXR: only a string holds a GUID (Wine's endpoints may not have one), and the
+	// property is freed afterwards.
+	hr = pv.vt == VT_LPWSTR && pv.pwszVal ? IIDFromString(pv.pwszVal, deviceGuid) : E_INVALIDARG;
+	PropVariantClear(&pv);
 	if (FAILED(hr))
 		return ovrError_RuntimeException;
 	return ovrSuccess;
@@ -74,7 +78,9 @@ ovrResult GetDefaultAudioEndpoint(EDataFlow endpoint, WCHAR deviceStrBuffer[OVR_
 		return ovrError_AudioComError;
 
 	Microsoft::WRL::ComPtr<IMMDevice> pDevice;
-	hr = pEnumerator->GetDefaultAudioEndpoint(eRender, eConsole, &pDevice);
+	// EchoXR: the direction asked for (Revive always used the speakers, so the microphone
+	// query answered with the output device).
+	hr = pEnumerator->GetDefaultAudioEndpoint(endpoint, eConsole, &pDevice);
 	if (FAILED(hr))
 		return ovrError_AudioDeviceNotFound;
 
@@ -83,6 +89,7 @@ ovrResult GetDefaultAudioEndpoint(EDataFlow endpoint, WCHAR deviceStrBuffer[OVR_
 	if (FAILED(hr))
 		return ovrError_AudioComError;
 	wcscpy_s(deviceStrBuffer, OVR_AUDIO_MAX_DEVICE_STR_SIZE, pGuid);
+	CoTaskMemFree(pGuid);
 	return ovrSuccess;
 }
 
@@ -307,7 +314,7 @@ OVR_PUBLIC_FUNCTION(ovrResult) ovr_GetAudioDeviceOutGuid(GUID* deviceOutGuid)
 		{
 			HRESULT hr = GetDeviceID(&DSDEVID_DefaultPlayback, &cachedGuid);
 			if (FAILED(hr))
-				ovrError_AudioOutputDeviceNotFound;
+				return ovrError_AudioOutputDeviceNotFound;
 		}
 	}
 	*deviceOutGuid = cachedGuid;
