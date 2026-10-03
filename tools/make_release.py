@@ -50,23 +50,19 @@ NOTICES = [
 # --- README text, shared pieces -------------------------------------------------------
 LINUX = """Linux
 -----
-EchoXR runs on Linux through Proton (untested so far), on SteamVR, Monado or
-WiVRn. Copy Echo VR (the whole ready-at-dawn-echo-arena folder) from a Windows
-PC, unzip this release into its bin/win10 folder as above, start your VR server,
-then run:
+EchoXR runs on Linux through Proton, on SteamVR, Monado or WiVRn. Copy Echo VR
+(the whole ready-at-dawn-echo-arena folder) from a Windows PC, unzip this release
+into its bin/win10 folder as above, and copy LibOVRPlatform64_1.dll and
+LibOVRP2P64_1.dll from the PC's C:\\Program Files\\Oculus\\Support\\oculus-runtime\\
+next to echovr.exe. Start your VR service, wake the headset, then run:
 
    bin/win10/EchoXR/echoxr-linux.sh --check     reports anything missing
    bin/win10/EchoXR/echoxr-linux.sh             starts Echo
 
-It needs Steam with Proton Experimental, Proton 8+ or GE-Proton, an active
-OpenXR runtime, and an OpenVR runtime: SteamVR, or xrizer/OpenComposite on
-Monado and WiVRn. Proton only turns OpenXR on when OpenVR is there.
-"""
+It needs Steam with Proton 9 or newer, Proton Experimental or GE-Proton, and an active
+OpenXR runtime. No OpenVR runtime (xrizer, OpenComposite) is needed.
 
-UPDATES = """Updates
--------
-EchoXR.exe checks GitHub for a new release once a day and asks before
-installing it. Turn that off with CheckForUpdates = 0 in EchoXR\\echoxr.ini.
+The Echo VR launcher does all of this for you, on Windows and Linux.
 """
 
 INSTALL_XR = """Install
@@ -75,28 +71,30 @@ INSTALL_XR = """Install
    C:\\Program Files\\Oculus\\Software\\Software\\ready-at-dawn-echo-arena\\bin\\win10
    You should end up with EchoXR.exe next to echovr.exe, and an EchoXR folder.
 2. Install SteamVR (free, on Steam) and check your headset works in it.
-3. Run EchoXR.exe.
+3. Run EchoXR.exe. It has no window: Echo starts, or launcher.log says why not.
 
-The first launch sets things up:
- - makes echovr_openxr.exe, a patched copy of your echovr.exe that accepts the
-   EchoXR runtime (echovr.exe itself isn't changed).
+The first launch makes echovr_openxr.exe, a patched copy of your echovr.exe that
+accepts the EchoXR runtime (echovr.exe itself isn't changed).
 """
 
 # --- the README -------------------------------------------------------------------
 README = ("""EchoXR {version}
 ===========
-Echo VR on SteamVR through OpenXR (no Oculus app).
+Echo VR through OpenXR: on SteamVR on Windows, and through Proton on Linux.
+No Oculus or Meta app, no Visual C++ runtime.
 
-""" + INSTALL_XR + "\n" + LINUX + "\n" + UPDATES + """
+""" + INSTALL_XR + "\n" + LINUX + """
 Logs
 ----
-EchoXR\\launcher.log        what EchoXR.exe set up and launched
+EchoXR\\launcher.log        every launch: the runtime and headset found, Echo's exit code
 EchoXR\\runtime.log         the OpenXR side, including any failed OpenXR call
+
+EchoXR.exe's own exit codes: 2 not in bin\\win10, 3 runtime files missing,
+4 echovr_openxr.exe couldn't be made, 5 no OpenXR runtime (or VR service),
+6 no headset, 7 Echo couldn't start. Anything else is Echo's own.
 
 Licences: see EchoXR\\THIRD_PARTY_NOTICES.txt.
 """)
-
-
 
 def source(build, src):
     return os.path.join(ROOT, src[1:]) if src.startswith("@") else os.path.join(build, "out", src)
