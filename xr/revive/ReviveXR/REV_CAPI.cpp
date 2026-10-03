@@ -317,6 +317,11 @@ OVR_PUBLIC_FUNCTION(ovrResult) ovr_GetSessionStatus(ovrSession session, ovrSessi
 			session->SessionStatus = status;
 			break;
 		}
+		case XR_TYPE_EVENT_DATA_INTERACTION_PROFILE_CHANGED:
+			// Which controller profile the runtime bound: "none" means the
+			// controllers have no binding and won't track.
+			InputManager::LogInteractionProfiles(session->Instance, session->Session);
+			break;
 		case XR_TYPE_EVENT_DATA_VISIBILITY_MASK_CHANGED_KHR:
 		{
 			const XrEventDataVisibilityMaskChangedKHR& maskChange =

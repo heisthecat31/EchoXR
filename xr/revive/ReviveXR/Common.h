@@ -36,11 +36,15 @@ extern XrResult g_LastResult;
         )
 #endif
 
+// EchoXR: every failed OpenXR call is written to EchoXR/runtime.log (see src/xr_main.cpp)
+void EchoXR_LogFail(const char* call, int result, const char* file, int line);
+void EchoXR_Log(const char* fmt, ...);
+
 #define CHK_XR(x) \
 	{ \
 		g_LastResult = (x); \
 		assertmsg(XR_SUCCEEDED(g_LastResult), ResultToString(g_LastResult)); \
-		if (XR_FAILED(g_LastResult)) return ResultToOvrResult(g_LastResult); \
+		if (XR_FAILED(g_LastResult)) { EchoXR_LogFail(#x, (int)g_LastResult, __FILE__, __LINE__); return ResultToOvrResult(g_LastResult); } \
 	}
 
 #define CHK_OVR(x) \

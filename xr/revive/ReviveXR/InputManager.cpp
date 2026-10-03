@@ -30,17 +30,38 @@ InputManager::InputManager(XrInstance instance)
 	{
 		device->GetActiveSets(m_ActionSets);
 
-		std::vector<XrActionSuggestedBinding> bindings;
-		XrPath profile = device->GetSuggestedBindings(bindings);
-		if (!profile)
+		// Suggest bindings for every profile a device supports, the runtime picks
+		// the one that best matches the connected controllers. A runtime that
+		// can't remap a single profile to new hardware would otherwise leave the
+		// controllers without any binding, so they never report a pose.
+		std::vector<ProfileBindings> profiles;
+		device->GetSuggestedBindings(profiles);
+		for (const ProfileBindings& profile : profiles)
+		{
+			XrInteractionProfileSuggestedBinding suggestedBinding = XR_TYPE(INTERACTION_PROFILE_SUGGESTED_BINDING);
+			suggestedBinding.countSuggestedBindings = (uint32_t)profile.Bindings.size();
+			suggestedBinding.suggestedBindings = profile.Bindings.data();
+			suggestedBinding.interactionProfile = profile.Profile;
+			XrResult rs = xrSuggestInteractionProfileBindings(instance, &suggestedBinding);
+			if (XR_FAILED(rs))
+				EchoXR_LogFail("xrSuggestInteractionProfileBindings", (int)rs, __FILE__, __LINE__);
+		}
+	}
+}
+
+void InputManager::LogInteractionProfiles(XrInstance instance, XrSession session)
+{
+	for (int i = 0; i < ovrHand_Count; i++)
+	{
+		XrInteractionProfileState state = XR_TYPE(INTERACTION_PROFILE_STATE);
+		if (XR_FAILED(xrGetCurrentInteractionProfile(session, s_SubActionPaths[i], &state)))
 			continue;
 
-		XrInteractionProfileSuggestedBinding suggestedBinding = XR_TYPE(INTERACTION_PROFILE_SUGGESTED_BINDING);
-		suggestedBinding.countSuggestedBindings = (uint32_t)bindings.size();
-		suggestedBinding.suggestedBindings = bindings.data();
-		suggestedBinding.interactionProfile = profile;
-		XrResult rs = xrSuggestInteractionProfileBindings(instance, &suggestedBinding);
-		assert(XR_SUCCEEDED(rs));
+		char name[XR_MAX_PATH_LENGTH] = "none";
+		uint32_t len = 0;
+		if (state.interactionProfile != XR_NULL_PATH)
+			xrPathToString(instance, state.interactionProfile, sizeof(name), &len, name);
+		EchoXR_Log("%s hand interaction profile: %s", i == ovrHand_Left ? "Left" : "Right", name);
 	}
 }
 
@@ -435,20 +456,38 @@ void InputManager::OculusTouch::UpdateHaptics(XrSession session, XrDuration disp
 	}
 }
 
-XrPath InputManager::OculusTouch::GetSuggestedBindings(std::vector<XrActionSuggestedBinding>& outBindings) const
+void InputManager::OculusTouch::GetSuggestedBindings(std::vector<ProfileBindings>& outProfiles) const
+{
+	if (Runtime::Get().UseHack(Runtime::HACK_WMR_PROFILE))
+	{
+		outProfiles.push_back(GetLayoutBindings(Layout_WMR));
+		return;
+	}
+
+	// Always offer the Touch profile: it's the one nearly every OpenXR game
+	// suggests, so new controllers (such as the Steam Frame's) ship bindings
+	// for it even when the runtime can't convert the Index profile to them.
+	outProfiles.push_back(GetLayoutBindings(Layout_Touch));
+	if (Runtime::Get().UseHack(Runtime::HACK_VALVE_INDEX_PROFILE))
+		outProfiles.push_back(GetLayoutBindings(Layout_Index));
+}
+
+InputManager::ProfileBindings InputManager::OculusTouch::GetLayoutBindings(Layout layout) const
 {
 	std::string prefixes[ovrHand_Count] = { "/user/hand/left", "/user/hand/right" };
+	ProfileBindings result;
+	std::vector<XrActionSuggestedBinding>& outBindings = result.Bindings;
 
 #define ADD_BINDING(action, path) outBindings.push_back(XrActionSuggestedBinding{ action, GetXrPath(path) })
 
-	if (Runtime::Get().UseHack(Runtime::HACK_WMR_PROFILE))
+	if (layout == Layout_WMR)
 	{
 		ADD_BINDING(m_Button_Enter, "/user/hand/left/input/menu/click");
 		ADD_BINDING(m_Button_Home, "/user/hand/right/input/menu/click");
 	}
 	else
 	{
-		if (Runtime::Get().UseHack(Runtime::HACK_VALVE_INDEX_PROFILE))
+		if (layout == Layout_Index)
 		{
 			ADD_BINDING(m_Button_Enter, "/user/hand/left/input/trackpad/force");
 			ADD_BINDING(m_Button_AX, "/user/hand/left/input/a/click");
@@ -474,7 +513,7 @@ XrPath InputManager::OculusTouch::GetSuggestedBindings(std::vector<XrActionSugge
 
 	for (int i = 0; i < ovrHand_Count; i++)
 	{
-		if (Runtime::Get().UseHack(Runtime::HACK_WMR_PROFILE))
+		if (layout == Layout_WMR)
 		{
 			ADD_BINDING(m_Trackpad_Buttons, prefixes[i] + "/input/trackpad/y");
 			ADD_BINDING(m_Button_AX, prefixes[i] + "/input/trackpad/click");
@@ -493,7 +532,7 @@ XrPath InputManager::OculusTouch::GetSuggestedBindings(std::vector<XrActionSugge
 			ADD_BINDING(m_Thumbstick, prefixes[i] + "/input/thumbstick");
 			ADD_BINDING(m_Button_Thumb, prefixes[i] + "/input/thumbstick/click");
 			ADD_BINDING(m_Touch_Thumb, prefixes[i] + "/input/thumbstick/touch");
-			if (Runtime::Get().UseHack(Runtime::HACK_VALVE_INDEX_PROFILE))
+			if (layout == Layout_Index)
 				ADD_BINDING(m_Touch_ThumbRest, prefixes[i] + "/input/trackpad/touch");
 			else
 				ADD_BINDING(m_Touch_ThumbRest, prefixes[i] + "/input/thumbrest/touch");
@@ -508,12 +547,13 @@ XrPath InputManager::OculusTouch::GetSuggestedBindings(std::vector<XrActionSugge
 
 #undef ADD_BINDING
 
-	if (Runtime::Get().UseHack(Runtime::HACK_VALVE_INDEX_PROFILE))
-		return GetXrPath("/interaction_profiles/valve/index_controller");
-	else if (Runtime::Get().UseHack(Runtime::HACK_WMR_PROFILE))
-		return GetXrPath("/interaction_profiles/microsoft/motion_controller");
+	if (layout == Layout_Index)
+		result.Profile = GetXrPath("/interaction_profiles/valve/index_controller");
+	else if (layout == Layout_WMR)
+		result.Profile = GetXrPath("/interaction_profiles/microsoft/motion_controller");
 	else
-		return GetXrPath("/interaction_profiles/oculus/touch_controller");
+		result.Profile = GetXrPath("/interaction_profiles/oculus/touch_controller");
+	return result;
 }
 
 void InputManager::OculusTouch::GetActionSpaces(XrSession session, std::vector<XrSpace>& outSpaces) const
@@ -755,8 +795,11 @@ InputManager::XboxGamepad::~XboxGamepad()
 {
 }
 
-XrPath InputManager::XboxGamepad::GetSuggestedBindings(std::vector<XrActionSuggestedBinding>& outBindings) const
+void InputManager::XboxGamepad::GetSuggestedBindings(std::vector<ProfileBindings>& outProfiles) const
 {
+	ProfileBindings result;
+	std::vector<XrActionSuggestedBinding>& outBindings = result.Bindings;
+
 #define ADD_BINDING(action, path) outBindings.push_back(XrActionSuggestedBinding{ action, GetXrPath(std::string("/user/gamepad") + path) })
 
 	ADD_BINDING(m_Button_A, "/input/a/click");
@@ -782,7 +825,8 @@ XrPath InputManager::XboxGamepad::GetSuggestedBindings(std::vector<XrActionSugge
 
 #undef ADD_BINDING
 
-	return GetXrPath("/interaction_profiles/microsoft/xbox_controller");
+	result.Profile = GetXrPath("/interaction_profiles/microsoft/xbox_controller");
+	outProfiles.push_back(result);
 }
 
 void InputManager::XboxGamepad::GetInputState(XrSession session, ovrControllerType controllerType, ovrInputState* inputState)

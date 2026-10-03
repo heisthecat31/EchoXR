@@ -34,7 +34,11 @@ Runtime::HackInfo Runtime::s_known_hacks[] = {
 	{ nullptr, "SteamVR/OpenXR", HACK_BROKEN_LINE_LOOP, 0, 0x100000000, true },
 	{ nullptr, "SteamVR/OpenXR", HACK_MIN_HAPTIC_DURATION, 0, 0, true },
 	{ nullptr, "Windows Mixed Reality Runtime", HACK_WAIT_FOR_SESSION_READY, 0, 0, true },
+	// EchoXR: SteamVR fails xrLocateViews with XR_ERROR_VALIDATION_FAILURE until the
+	// temporary FOV session is running, so it needs the same wait-for-READY as WMR.
+	{ nullptr, "SteamVR/OpenXR", HACK_WAIT_FOR_SESSION_READY, 0, 0, true },
 	{ "echovr.exe", nullptr, HACK_FORCE_FOV_FALLBACK, 0, 0, true },
+	{ "echovr_openxr.exe", nullptr, HACK_FORCE_FOV_FALLBACK, 0, 0, true },   // EchoXR's launch copy
 	{ "loneecho.exe", nullptr, HACK_FORCE_FOV_FALLBACK, 0, 0, true },
 };
 
@@ -81,10 +85,20 @@ ovrResult Runtime::CreateInstance(XrInstance* out_Instance, const ovrInitParams*
 	ColorSpace = Supports(XR_FB_COLOR_SPACE_EXTENSION_NAME);
 
 	XrInstanceCreateInfo createInfo = XR_TYPE(INSTANCE_CREATE_INFO);
-	createInfo.applicationInfo = { "Revive", REV_VERSION_INT, "Revive", REV_VERSION_INT, XR_CURRENT_API_VERSION };
+	// EchoXR: request OpenXR 1.0. Built against the 1.1 SDK, XR_CURRENT_API_VERSION asks for 1.1,
+	// which 1.0 runtimes reject with XR_ERROR_API_VERSION_UNSUPPORTED (-> ovrError_ServiceVersion, -3004).
+	createInfo.applicationInfo = { "Revive", REV_VERSION_INT, "Revive", REV_VERSION_INT, XR_API_VERSION_1_0 };
 	createInfo.enabledExtensionCount = (uint32_t)m_extensions.size();
 	createInfo.enabledExtensionNames = m_extensions.data();
 	CHK_XR(xrCreateInstance(&createInfo, out_Instance));
+	{
+		XrInstanceProperties ip = XR_TYPE(INSTANCE_PROPERTIES);
+		if (XR_SUCCEEDED(xrGetInstanceProperties(*out_Instance, &ip)))
+			EchoXR_Log("OpenXR runtime: %s %u.%u.%u", ip.runtimeName, (unsigned)XR_VERSION_MAJOR(ip.runtimeVersion),
+			           (unsigned)XR_VERSION_MINOR(ip.runtimeVersion), (unsigned)XR_VERSION_PATCH(ip.runtimeVersion));
+		for (const char* e : m_extensions) EchoXR_Log("  enabled extension: %s", e);
+		EchoXR_Log("Oculus SDK minor version requested by the game: %d", MinorVersion);
+	}
 
 	char filepath[MAX_PATH];
 	GetModuleFileNameA(NULL, filepath, MAX_PATH);

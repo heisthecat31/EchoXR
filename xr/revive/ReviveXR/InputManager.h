@@ -12,6 +12,12 @@ class Runtime;
 class InputManager
 {
 public:
+	struct ProfileBindings
+	{
+		XrPath Profile;
+		std::vector<XrActionSuggestedBinding> Bindings;
+	};
+
 	class InputDevice
 	{
 	public:
@@ -24,7 +30,7 @@ public:
 		virtual void GetInputState(XrSession session, ovrControllerType controllerType, ovrInputState* inputState) = 0;
 
 		// Bindings
-		virtual XrPath GetSuggestedBindings(std::vector<XrActionSuggestedBinding>& outBindings) const { return XR_NULL_PATH; }
+		virtual void GetSuggestedBindings(std::vector<ProfileBindings>& outProfiles) const { }
 		virtual void GetActionSpaces(XrSession session, std::vector<XrSpace>& outSpaces) const { }
 		virtual void GetActiveSets(std::vector<XrActiveActionSet>& outSets) const { }
 
@@ -72,7 +78,7 @@ public:
 		virtual ovrControllerType GetType() const override;
 		virtual bool IsConnected() const override;
 		virtual void GetInputState(XrSession session, ovrControllerType controllerType, ovrInputState* inputState) override;
-		virtual XrPath GetSuggestedBindings(std::vector<XrActionSuggestedBinding>& outBindings) const override;
+		virtual void GetSuggestedBindings(std::vector<ProfileBindings>& outProfiles) const override;
 		virtual void GetActionSpaces(XrSession session, std::vector<XrSpace>& outSpaces) const override;
 		virtual void GetActiveSets(std::vector<XrActiveActionSet>& outSets) const override;
 
@@ -82,6 +88,9 @@ public:
 		virtual void UpdateHaptics(XrSession session, XrDuration displayPeriod) override;
 
 	private:
+		enum Layout { Layout_Touch, Layout_Index, Layout_WMR };
+		ProfileBindings GetLayoutBindings(Layout layout) const;
+
 		Action m_Button_AX;
 		Action m_Button_BY;
 		Action m_Button_Thumb;
@@ -140,7 +149,7 @@ public:
 		virtual ovrControllerType GetType() const override { return ovrControllerType_XBox; }
 		virtual bool IsConnected() const override { return true; }
 		virtual void GetInputState(XrSession session, ovrControllerType controllerType, ovrInputState* inputState) override;
-		virtual XrPath GetSuggestedBindings(std::vector<XrActionSuggestedBinding>& outBindings) const override;
+		virtual void GetSuggestedBindings(std::vector<ProfileBindings>& outProfiles) const override;
 		virtual void GetActiveSets(std::vector<XrActiveActionSet>& outSets) const override;
 		virtual ovrResult SetVibration(XrSession session, ovrControllerType controllerType, float frequency, float amplitude) override;
 
@@ -179,6 +188,7 @@ public:
 	ovrResult GetControllerVibrationState(ovrSession session, ovrControllerType controllerType, ovrHapticsPlaybackState* outState);
 
 	void GetTrackingState(ovrSession session, ovrTrackingState* outState, double absTime);
+	static void LogInteractionProfiles(XrInstance instance, XrSession session);
 	ovrResult GetDevicePoses(ovrSession session, ovrTrackedDeviceType* deviceTypes, int deviceCount, double absTime, ovrPoseStatef* outDevicePoses);
 
 protected:

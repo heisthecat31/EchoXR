@@ -29,12 +29,17 @@ ovrResult ovrHmdStruct::InitSession(XrInstance instance)
 	SystemColorSpace = XR_TYPE(SYSTEM_COLOR_SPACE_PROPERTIES_FB);
 
 	// Initialize view structures
+	// EchoXR: only chain the EPIC fov struct when that extension is enabled. SteamVR
+	// validates next-chains strictly and fails xrEnumerateViewConfigurationViews with
+	// XR_ERROR_VALIDATION_FAILURE for a struct from a disabled extension; the fallback
+	// below already derives the FOV without it.
+	const bool epicFov = Runtime::Get().Supports(XR_EPIC_VIEW_CONFIGURATION_FOV_EXTENSION_NAME);
 	for (int i = 0; i < ovrEye_Count; i++)
 	{
 		ViewConfigs[i] = XR_TYPE(VIEW_CONFIGURATION_VIEW);
 		ViewFov[i] = XR_TYPE(VIEW_CONFIGURATION_VIEW_FOV_EPIC);
 		ViewPoses[i] = XR_TYPE(VIEW);
-		ViewConfigs[i].next = &ViewFov[i];
+		ViewConfigs[i].next = epicFov ? &ViewFov[i] : nullptr;
 	}
 
 	XrSystemGetInfo systemInfo = XR_TYPE(SYSTEM_GET_INFO);
@@ -98,6 +103,9 @@ ovrResult ovrHmdStruct::InitSession(XrInstance instance)
 			XrEventDataBuffer event;
 			const XrEventDataSessionStateChanged& stateChanged =
 				reinterpret_cast<XrEventDataSessionStateChanged&>(event);
+			// EchoXR: bounded wait -- an idle/asleep headset never reports READY, and an
+			// unbounded loop would hang the game's startup forever.
+			const auto waitStart = std::chrono::steady_clock::now();
 			do
 			{
 				event = XR_TYPE(EVENT_DATA_BUFFER);
@@ -106,6 +114,11 @@ ovrResult ovrHmdStruct::InitSession(XrInstance instance)
 					break;
 				if (result == XR_EVENT_UNAVAILABLE)
 					std::this_thread::sleep_for(10ms);
+				if (std::chrono::steady_clock::now() - waitStart > std::chrono::seconds(5))
+				{
+					EchoXR_Log("temporary FOV session never became READY within 5 s (headset asleep?)");
+					break;
+				}
 			} while (event.type != XR_TYPE_EVENT_DATA_SESSION_STATE_CHANGED ||
 				stateChanged.state != XR_SESSION_STATE_READY);
 			assert(stateChanged.session == Session);
