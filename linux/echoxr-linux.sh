@@ -13,10 +13,11 @@
 #     -> EchoXR\openxr_loader.dll -> Proton's wineopenxr.dll (registered in the prefix)
 #     -> wineopenxr.so -> the Linux runtime named by XR_RUNTIME_JSON
 #
-# Proton only turns wineopenxr on after it has started an OpenVR client at launch
-# (steam.exe's VR setup), so an OpenVR runtime has to be registered and its server
-# running when Echo starts: SteamVR itself, or xrizer/OpenComposite in front of
-# Monado or WiVRn. Without one, Echo fails with "Failed to initialize Oculus VR session".
+# Proton's own VR setup only turns wineopenxr on after it has started an OpenVR client.
+# When it couldn't (no OpenVR runtime, as with plain Monado or WiVRn), EchoXR.exe sets
+# OpenXR up itself, so only an OpenXR runtime is needed. Its VR service (SteamVR,
+# monado-service, wivrn-server) has to be running, and the headset awake, when Echo
+# starts; this script checks that and tells EchoXR.exe.
 #
 # Settings (environment):
 #   ECHOXR_PROTON=/path/to/proton-dir   pick a Proton (default: newest GE-Proton, then Proton Experimental)
@@ -61,11 +62,14 @@ echo_dir="$(cd "$echo_dir" && pwd)"
 game_root="$(cd "$echo_dir/../.." && pwd)"
 # pnsovr.dll (the platform/login layer) imports LibOVRPlatform64_1.dll. On Windows it
 # comes from the Oculus app's folder; a Linux prefix has none, so it must sit next to Echo.
-if [ -f "$echo_dir/pnsovr.dll" ] && [ ! -f "$echo_dir/LibOVRPlatform64_1.dll" ]; then
-    say "warning: no LibOVRPlatform64_1.dll in $echo_dir -- Echo can't log in without it."
-    say "         Copy it (and LibOVRPlatformImpl64_1.dll) from your Windows PC's"
-    say "         C:\\Program Files\\Oculus\\Support\\oculus-runtime\\ into bin/win10."
-fi
+# The game's LibOVRPlatformImpl64_1.dll in turn needs LibOVRP2P64_1.dll.
+for dll in LibOVRPlatform64_1.dll LibOVRP2P64_1.dll; do
+    if [ -f "$echo_dir/pnsovr.dll" ] && [ ! -f "$echo_dir/$dll" ]; then
+        say "warning: no $dll in $echo_dir -- Echo may not log in without it."
+        say "         Copy it from a Windows PC's C:\\Program Files\\Oculus\\Support\\oculus-runtime\\"
+        say "         into bin/win10 (the Echo VR launcher does this for you)."
+    fi
+done
 
 # ---- Steam, and the libraries it knows about ------------------------------------
 steam_root=""
@@ -104,7 +108,7 @@ for d in "$proton/files/lib/wine" "$proton/files/lib64/wine" "$proton/dist/lib64
     [ -d "$d" ] && wine_lib="$d" && break
 done
 if [ -z "$wine_lib" ] || ! ls "$wine_lib"/x86_64-windows/wineopenxr.dll "$wine_lib"/x86_64-unix/wineopenxr.so >/dev/null 2>&1; then
-    die "$(basename "$proton") has no wineopenxr bridge -- use Proton 8 or newer, or GE-Proton"
+    die "$(basename "$proton") has no wineopenxr bridge -- use Proton 9 or newer, Proton Experimental or GE-Proton"
 fi
 
 # ---- the OpenXR runtime ---------------------------------------------------------
@@ -118,43 +122,35 @@ fi
     die "no active OpenXR runtime -- set one in SteamVR/Monado/WiVRn, or export XR_RUNTIME_JSON=/path/to/manifest.json"
 runtime="$(readlink -f "$runtime")"
 
-# ---- the OpenVR runtime Proton needs before it enables wineopenxr ------------------
-# Proton reads the same file (proton: setup_openvr_paths) and loads
-# <runtime>/bin/linux64/vrclient.so; VR_OVERRIDE replaces the runtime path.
+# ---- the VR service ----------------------------------------------------------------
+# The runtime's service has to be up when Echo starts (Linux SteamVR's OpenXR waits forever
+# otherwise). Found: EchoXR.exe is told so. Not found: a warning, and EchoXR.exe gives up
+# after 20 s with exit code 5 instead of hanging.
+xdg_run="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+service=""
+if pgrep -x vrserver >/dev/null 2>&1; then service="SteamVR (vrserver)"
+elif [ -S "$xdg_run/monado_comp_ipc" ]; then service="Monado ($xdg_run/monado_comp_ipc)"
+elif [ -S "$xdg_run/wivrn/comp_ipc" ]; then service="WiVRn ($xdg_run/wivrn/comp_ipc)"
+fi
+if [ -n "$service" ]; then
+    export ECHOXR_VR_SERVICE=ready
+else
+    say "warning: no VR service running -- start SteamVR, monado-service or wivrn-server"
+    say "         (and wake the headset) before Echo"
+fi
+
+# An OpenVR runtime isn't needed any more (EchoXR.exe sets OpenXR up without one), but
+# Proton still uses one when it's registered: report it.
 vrpath="${VR_PATHREG_OVERRIDE:-${XDG_CONFIG_HOME:-$HOME/.config}/openvr/openvrpaths.vrpath}"
 openvr="${VR_OVERRIDE:-}"
 if [ -z "$openvr" ] && [ -f "$vrpath" ]; then
     openvr="$(python3 -c 'import json,sys; r=json.load(open(sys.argv[1])).get("runtime") or [""]; print(r[0] if isinstance(r, list) else "")' "$vrpath" 2>/dev/null || true)"
 fi
-[ -n "$openvr" ] || [ ! -f "$vrpath" ] ||
-    die "can't read the OpenVR runtime from $vrpath (needs python3, which Proton needs too)"
-[ -n "$openvr" ] ||
-    die "no OpenVR runtime registered ($vrpath) -- Proton needs one to enable OpenXR.
-         SteamVR: start SteamVR once. Monado/WiVRn: install xrizer or OpenComposite and
-         register it (WiVRn and Envision can do this for you)."
-[ -f "$openvr/bin/linux64/vrclient.so" ] ||
-    die "the registered OpenVR runtime $openvr has no bin/linux64/vrclient.so -- reinstall it,
-         or point VR_OVERRIDE at a working one"
-
-# The OpenVR client has to reach a running server when Echo starts, or Proton gives up
-# on VR for the whole launch. Warn rather than stop: process names vary between setups.
-case "$openvr$runtime" in
-    *[Ss]team[Vv][Rr]*) servers="vrserver" ;;
-    *) servers="" ;;
-esac
-case "$runtime" in
-    *monado*) servers="$servers monado-service" ;;
-    *wivrn*|*WiVRn*) servers="$servers wivrn-server" ;;
-esac
-for srv in $servers; do
-    pgrep -x "$srv" >/dev/null 2>&1 ||
-        say "warning: $srv isn't running -- start it (and wake the headset) before Echo"
-done
 case "$openvr" in *[Ss]team[Vv][Rr]*) ov_steamvr=1 ;; *) ov_steamvr=0 ;; esac
 case "$runtime" in *[Ss]team[Vv][Rr]*|*steamxr*) xr_steamvr=1 ;; *) xr_steamvr=0 ;; esac
-# xrizer/OpenComposite forward to the OpenXR runtime anyway; SteamVR's OpenVR doesn't
-[ "$ov_steamvr" = 1 ] && [ "$xr_steamvr" = 0 ] &&
-    say "warning: OpenVR is SteamVR's but OpenXR is $runtime -- SteamVR has to be running too"
+# SteamVR's OpenVR client wants SteamVR running even when OpenXR goes elsewhere.
+[ "$ov_steamvr" = 1 ] && [ "$xr_steamvr" = 0 ] && ! pgrep -x vrserver >/dev/null 2>&1 &&
+    say "note: OpenVR is SteamVR's but OpenXR is $runtime -- Proton's OpenVR step will fail, EchoXR sets OpenXR up itself"
 
 # ---- the prefix and the environment Proton needs --------------------------------
 prefix="${ECHOXR_PREFIX:-$data/prefix}"
@@ -180,7 +176,8 @@ fi
 say "Echo:    $echo_dir"
 say "Proton:  $proton"
 say "OpenXR:  $runtime"
-say "OpenVR:  $openvr"
+say "OpenVR:  ${openvr:-(none; not needed)}"
+say "service: ${service:-(none found)}"
 say "prefix:  $prefix"
 
 cmd=("$proton/proton" waitforexitandrun "$echo_dir/EchoXR.exe" "${args[@]}")
@@ -202,6 +199,14 @@ set +e
 "${cmd[@]}"
 rc=$?
 set -e
+case "$rc" in
+    2) say "EchoXR.exe isn't next to echovr.exe in bin/win10" ;;
+    3) say "EchoXR's runtime files are missing: unzip the whole release into bin/win10" ;;
+    4) say "EchoXR couldn't prepare echovr_openxr.exe (see launcher.log)" ;;
+    5) say "no OpenXR runtime answered: start SteamVR, monado-service or wivrn-server first" ;;
+    6) say "the OpenXR runtime has no headset: connect it and wake it up" ;;
+    7) say "Echo couldn't be started (see launcher.log)" ;;
+esac
 say "Echo exited ($rc). Logs:"
 say "  $log"
 say "  $echo_dir/EchoXR/launcher.log"

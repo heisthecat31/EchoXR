@@ -54,9 +54,7 @@ dkms.conf
 /out
 /obj
 /xr/obj
-# upstream checkouts (see xr/README.md "Building"; our Revive changes are in xr/patches/)
-/xr/Revive/
-/xr/OpenXR-SDK/
-/xr/ovr_sdk_pc/
+# CMake build trees (see README.md "Building")
+/build/
 # MCP config with a private access token (ReVault) -- never commit
 /.mcp.json
