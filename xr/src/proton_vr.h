@@ -8,6 +8,10 @@
 // sets state = 1: Proton 10 and newer have wineopenxr write the values itself
 // (wineopenxr_init_registry); Proton 9 asks it for them (__wineopenxr_get_extensions_internal)
 // and writes them in steam.exe, which EchoXR does the same way.
+//
+// GE-Proton patches wineopenxr to work without Steam: its wineopenxr_init_registry writes the
+// values into HKCU\Software\Wine\XR instead (and reads them from there). EchoXR takes them
+// from there when Wine\VR stays empty, and copies them into Wine\VR for everything else.
 #pragma once
 
 #include <windows.h>
@@ -20,6 +24,8 @@ namespace protonvr {
 typedef void (*LogFn)(const wchar_t* fmt, ...);
 
 static const wchar_t* kKey = L"Software\\Wine\\VR";
+// GE-Proton's wineopenxr keeps its own copy (state 1 when set up, -1 when the runtime failed).
+static const wchar_t* kXrKey = L"Software\\Wine\\XR";
 
 struct KeyState
 {
@@ -40,11 +46,11 @@ inline std::wstring ReadString(HKEY key, const wchar_t* name)
 	return buf;
 }
 
-inline KeyState ReadKey()
+inline KeyState ReadKey(const wchar_t* path = kKey)
 {
 	KeyState k;
 	HKEY h;
-	if (RegOpenKeyExW(HKEY_CURRENT_USER, kKey, 0, KEY_READ, &h) != ERROR_SUCCESS)
+	if (RegOpenKeyExW(HKEY_CURRENT_USER, path, 0, KEY_READ, &h) != ERROR_SUCCESS)
 		return k;
 	k.exists = true;
 	DWORD value = 0, size = sizeof(value), type = 0;
@@ -54,6 +60,30 @@ inline KeyState ReadKey()
 	k.deviceExtensions = RegQueryValueExW(h, L"openxr_vulkan_device_extensions", nullptr, nullptr, nullptr, nullptr) == ERROR_SUCCESS;
 	RegCloseKey(h);
 	return k;
+}
+
+// Copies OpenXR's Vulkan values from GE-Proton's Wine\XR into `to` (our Wine\VR). False when
+// Wine\XR doesn't have them.
+inline bool CopyFromXrKey(HKEY to)
+{
+	KeyState x = ReadKey(kXrKey);
+	if (x.state != 1 || !x.instanceExtensions || !x.deviceExtensions)
+		return false;
+	HKEY from;
+	if (RegOpenKeyExW(HKEY_CURRENT_USER, kXrKey, 0, KEY_READ, &from) != ERROR_SUCCESS)
+		return false;
+	// The extension lists are needed; the adapter's vendor and device id only when present.
+	auto copy = [&](const char* name) {
+		BYTE buf[8192];
+		DWORD size = sizeof(buf), type = 0;
+		return RegQueryValueExA(from, name, nullptr, &type, buf, &size) == ERROR_SUCCESS &&
+			RegSetValueExA(to, name, 0, type, buf, size) == ERROR_SUCCESS;
+	};
+	bool ok = copy("openxr_vulkan_instance_extensions") && copy("openxr_vulkan_device_extensions");
+	copy("openxr_vulkan_device_vid");
+	copy("openxr_vulkan_device_pid");
+	RegCloseKey(from);
+	return ok;
 }
 
 // A host path (/run/user/1000/...) as the prefix sees it (Z:\run\user\1000\...).
@@ -200,6 +230,11 @@ inline bool EnsureOpenXR(LogFn log, bool& didSetUp)
 	delete call;
 
 	k = ReadKey();
+	if ((!k.instanceExtensions || !k.deviceExtensions) && CopyFromXrKey(key))
+	{
+		log(L"wineopenxr (GE-Proton's) wrote them into HKCU\\%ls; copied into HKCU\\%ls", kXrKey, kKey);
+		k = ReadKey();
+	}
 	if (!k.instanceExtensions || !k.deviceExtensions)
 	{
 		log(L"ERROR: wineopenxr couldn't reach the OpenXR runtime. Is SteamVR, Monado or WiVRn running, "
