@@ -63,6 +63,12 @@ ovrResult ovrTextureSwapChainData::Init(XrSession session, const ovrTextureSwapC
 	createInfo.mipCount = desc->MipLevels;
 	CHK_XR(xrCreateSwapchain(session, &createInfo, &Swapchain));
 
+	// EchoXR: wineopenxr (D3D12) learns a swapchain's image count only when they're first
+	// enumerated, and refuses an acquire before that (XR_ERROR_CALL_ORDER_INVALID). Native
+	// runtimes don't mind; asking for the count first is valid everywhere.
+	uint32_t imageCount = 0;
+	CHK_XR(xrEnumerateSwapchainImages(Swapchain, 0, &imageCount, nullptr));
+
 	XrSwapchainImageAcquireInfo acqInfo = XR_TYPE(SWAPCHAIN_IMAGE_ACQUIRE_INFO);
 	CHK_XR(xrAcquireSwapchainImage(Swapchain, &acqInfo, &CurrentIndex));
 
