@@ -166,6 +166,19 @@ the whole session.
 
 ---
 
+## Changes in 0.4.1 (GE-Proton)
+
+Tested with a Quest 3 on SteamVR 2.16.7 (Steam Link) and on WiVRn 26.9, under GE-Proton11-3:
+
+- **OpenXR's set-up (`EchoXR.exe`).** GE-Proton's wineopenxr writes OpenXR's Vulkan
+  extensions into `HKCU\Software\Wine\XR`, not `Wine\VR`. 0.4.0 looked only in `Wine\VR`
+  and stopped with exit code 5 although the runtime answered; 0.4.1 takes them from
+  `Wine\XR` and copies them into `Wine\VR` (`proton_vr.h`).
+- **The first swapchain image (`Swapchain.cpp`).** wineopenxr (D3D12) knows a swapchain's
+  image count only after its images are enumerated, and refuses an acquire before that
+  (`XR_ERROR_CALL_ORDER_INVALID`): Echo stopped with "Unknown error while loading the
+  game". The count is asked for before the first acquire now.
+
 ## Changes for Proton, and for every runtime (0.4.0)
 
 Comparing this runtime with [RiftLift](https://github.com/Villagers654/RiftLift)'s (also
