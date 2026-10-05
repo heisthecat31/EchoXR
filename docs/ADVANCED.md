@@ -77,6 +77,7 @@ RiftLift code is used (it's GPL-3.0); xr/README.md lists what changed and why.
 | log | what's in it |
 | --- | --- |
 | `EchoXR\launcher.log` | every launch (dated): the runtime chosen, Proton's OpenXR setup, the runtime and headset found, Echo's exit code. Kept up to about 1 MB |
+| `EchoXR\platform.log` | the Platform SDK stand-in: where the identity came from, the ids, and every call the game's `pnsovr.dll` made |
 | `EchoXR\runtime.log` | the latest launch's OpenXR side: platform, runtime and extensions, the field-of-view probe, session states, swapchain format changes, the first frame, and every failed OpenXR call |
 | `_local\r14logs\*.log` | Echo's own log ("Initializing OVR session…" and any session error) |
 

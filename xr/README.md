@@ -33,6 +33,7 @@ EchoXR deletes the copy.
 | --- | --- | --- |
 | `LibOVRRT64_1.dll` | `bin\win10\EchoXR\` | The runtime. Revive's OpenXR backend ("ReviveXR", MIT), built under the Oculus runtime's DLL name. It implements every one of the 93 `ovr_*` functions Echo uses (125 in total) on top of OpenXR. |
 | `openxr_loader.dll` | `bin\win10\EchoXR\` | The official Khronos OpenXR loader, built from source (OpenXR SDK 1.1.63). |
+| `LibOVRPlatform64_1.dll` | `bin\win10\EchoXR\` | The Oculus Platform SDK, answered without Meta (`platform/`, by marshmallow-mia). The game's `pnsovr.dll` signs in through it: a signed-in user with a per-machine id (salted SHA-256 of the NIC's MAC under Wine, of Windows' MachineGuid otherwise; the Steam name as display name when there is one), entitled, and the microphone through WASAPI. Meta's loader needs the Oculus service and an Oculus account. |
 | `EchoXR.exe` | `bin\win10\` | The launcher, described below. |
 | `echovr_openxr.exe` | `bin\win10\` | The patched copy of `echovr.exe`, made on your machine by the launcher (see above). |
 
@@ -166,6 +167,16 @@ the whole session.
 
 ---
 
+## Changes in 0.4.2 (no Meta at all)
+
+- **The Platform SDK (`platform/`).** Echo's `pnsovr.dll` signs in through Oculus'
+  Platform SDK, which EchoXR's runtime didn't cover: Meta's loader had to come from a
+  Windows PC or Meta's runtime package, needed the Oculus service (none under Proton), and
+  stopped Echo with "Failed to initialize the Oculus Platform SDK". EchoXR now brings its
+  own `EchoXR\LibOVRPlatform64_1.dll` (marshmallow-mia's, from NoOvrEchoVR_on_Linux):
+  `EchoXR.exe` already puts `EchoXR\` first on `PATH` and in `LIBOVR_DLL_DIR`, so the game
+  loads it there, and only when EchoXR starts it. It logs to `EchoXR\platform.log`.
+
 ## Changes in 0.4.1 (GE-Proton)
 
 Tested with a Quest 3 on SteamVR 2.16.7 (Steam Link) and on WiVRn 26.9, under GE-Proton11-3:
@@ -228,6 +239,7 @@ the findings. The decisions that can be tested away from a headset live in
 | Log | What's in it |
 | --- | --- |
 | `bin\win10\EchoXR\launcher.log` | every launch (dated, kept up to about 1 MB): which runtime was chosen, Proton's OpenXR setup, the runtime and headset found, what was launched, Echo's exit code |
+| `bin\win10\EchoXR\platform.log` | the Platform SDK stand-in: the identity's source and ids, and every call `pnsovr.dll` made |
 | `bin\win10\EchoXR\runtime.log` | the latest launch: Windows or Wine, the OpenXR runtime's name and version, enabled extensions (and any required one missing), the SDK version Echo asked for, the field-of-view probe, session states, swapchain format changes, the first submitted frame, the controller profile bound to each hand, and **every failed OpenXR call** with its source line |
 | `_local\r14logs\*.log` | Echo's own log ("Initializing OVR session…" and any session error) |
 | `Steam\logs\vrserver.txt` | SteamVR's side of the connection |
@@ -236,6 +248,8 @@ the findings. The decisions that can be tested away from a headset live in
 
 ## Credits and licences
 
+- **Platform SDK stand-in** (`platform/`) — marshmallow-mia, first written for
+  NoOvrEchoVR_on_Linux.
 - **Revive / ReviveXR** — LibreVR, MIT License.
 - **OpenXR SDK and loader** — The Khronos Group, Apache 2.0.
 - **Oculus PC SDK headers** — Oculus/Meta. Used at build time only.

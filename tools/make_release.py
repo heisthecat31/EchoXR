@@ -32,6 +32,7 @@ XR_FILES = [
     ("EchoXR.exe",              "EchoXR.exe"),
     ("LibOVRRT64_1.dll",        "EchoXR/LibOVRRT64_1.dll"),
     ("openxr_loader.dll",       "EchoXR/openxr_loader.dll"),
+    ("LibOVRPlatform64_1.dll",  "EchoXR/LibOVRPlatform64_1.dll"),
     ("@linux/echoxr-linux.sh",  "EchoXR/echoxr-linux.sh"),
 ]
 

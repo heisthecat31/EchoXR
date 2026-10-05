@@ -9,7 +9,9 @@ Monado) through Proton.
   first releases, the Linux launcher, controller support, and the hand tracking that has
   since moved to [EchoXR Hands](https://github.com/EchoTools/EchoXR-Hands).
 - **marshmallow-mia**: the 0.4 line. The OpenXR-only package, the CMake build and CI,
-  Proton/GE-Proton support, the runtime fixes, and the Echo VR launcher integration.
+  Proton/GE-Proton support, the runtime fixes, the Echo VR launcher integration, and the
+  Oculus Platform SDK stand-in (`platform/`, first written for NoOvrEchoVR_on_Linux) that
+  signs the game in without Meta.
 
 ## What it builds on
 

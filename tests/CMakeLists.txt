@@ -15,3 +15,10 @@ set_target_properties(smoke_no_runtime PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMA
 add_test(NAME smoke_no_runtime COMMAND smoke_no_runtime $<TARGET_FILE:echoxr_runtime>)
 set_tests_properties(smoke_no_runtime PROPERTIES
     ENVIRONMENT "XR_RUNTIME_JSON=${CMAKE_BINARY_DIR}/tests/no-such-runtime.json")
+
+# EchoXR's Platform SDK stand-in, asked as the game's pnsovr.dll asks it.
+add_executable(platform_signin platform_signin.cpp)
+add_dependencies(platform_signin echoxr_platform)
+target_compile_definitions(platform_signin PRIVATE UNICODE _UNICODE)
+set_target_properties(platform_signin PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)
+add_test(NAME platform_signin COMMAND platform_signin $<TARGET_FILE:echoxr_platform>)

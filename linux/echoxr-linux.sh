@@ -60,16 +60,14 @@ echo_dir="$(cd "$echo_dir" && pwd)"
 [ -f "$echo_dir/EchoXR.exe" ] && [ -f "$echo_dir/EchoXR/LibOVRRT64_1.dll" ] ||
     die "EchoXR isn't installed in $echo_dir -- unzip the EchoXR release there first"
 game_root="$(cd "$echo_dir/../.." && pwd)"
-# pnsovr.dll (the platform/login layer) imports LibOVRPlatform64_1.dll. On Windows it
-# comes from the Oculus app's folder; a Linux prefix has none, so it must sit next to Echo.
-# The game's LibOVRPlatformImpl64_1.dll in turn needs LibOVRP2P64_1.dll.
-for dll in LibOVRPlatform64_1.dll LibOVRP2P64_1.dll; do
-    if [ -f "$echo_dir/pnsovr.dll" ] && [ ! -f "$echo_dir/$dll" ]; then
-        say "warning: no $dll in $echo_dir -- Echo may not log in without it."
-        say "         Copy it from a Windows PC's C:\\Program Files\\Oculus\\Support\\oculus-runtime\\"
-        say "         into bin/win10 (the Echo VR launcher does this for you)."
-    fi
-done
+# pnsovr.dll (the platform/login layer) imports LibOVRPlatform64_1.dll: EchoXR's own, in
+# EchoXR/ (no Meta service needed). One in bin/win10 itself would be loaded first instead.
+[ -f "$echo_dir/EchoXR/LibOVRPlatform64_1.dll" ] ||
+    die "EchoXR/LibOVRPlatform64_1.dll is missing -- unzip the EchoXR release (0.4.2 or newer) again"
+if [ -f "$echo_dir/LibOVRPlatform64_1.dll" ]; then
+    say "warning: $echo_dir/LibOVRPlatform64_1.dll is loaded instead of EchoXR's (and Meta's"
+    say "         needs the Oculus service): remove it from bin/win10."
+fi
 
 # ---- Steam, and the libraries it knows about ------------------------------------
 steam_root=""

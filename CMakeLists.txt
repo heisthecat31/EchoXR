@@ -5,6 +5,7 @@
 #                      runtime's name, with xr/src/xr_main.cpp as its entry point
 #   openxr_loader.dll  the Khronos OpenXR loader
 #   EchoXR.exe         the launcher (xr/src/launcher.cpp)
+#   LibOVRPlatform64_1.dll  the Oculus Platform SDK answered without Meta (platform/)
 #
 # Everything is linked against the static C runtime, so players need no Visual C++
 # redistributable. Presets: windows-msvc (MSVC on Windows) and cross-clang-cl (clang-cl and
@@ -143,6 +144,19 @@ target_compile_options(EchoXR PRIVATE /EHsc)
 target_link_options(EchoXR PRIVATE /SUBSYSTEM:WINDOWS /ENTRY:wmainCRTStartup)
 target_include_directories(EchoXR PRIVATE ${openxr_sdk_SOURCE_DIR}/include)
 target_link_libraries(EchoXR PRIVATE advapi32 shell32 user32)
+
+# --- The Platform SDK stand-in, LibOVRPlatform64_1.dll ------------------------------------
+# The game's pnsovr.dll signs in through it. Its exports are the .def's: the calls pnsovr
+# makes are answered, every other one goes to a no-op.
+add_library(echoxr_platform SHARED platform/libovrplatform.cpp platform/libovrplatform.def)
+set_target_properties(echoxr_platform PROPERTIES OUTPUT_NAME LibOVRPlatform64_1 PREFIX "")
+target_compile_definitions(echoxr_platform PRIVATE
+    NDEBUG _WINDOWS _USRDLL UNICODE _UNICODE _CRT_SECURE_NO_WARNINGS)
+target_compile_options(echoxr_platform PRIVATE /EHsc)
+if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+    target_compile_options(echoxr_platform PRIVATE -Wno-unused-parameter -Wno-unused-function)
+endif()
+target_link_libraries(echoxr_platform PRIVATE ole32 oleaut32 uuid advapi32 shell32 user32)
 
 # --- Tests (run on Windows, or under Wine) ------------------------------------------------
 enable_testing()

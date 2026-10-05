@@ -18,11 +18,11 @@ EchoXR for you. To set it up by hand, take the latest `EchoXR-OpenXR-v<version>.
 
 ## Linux
 
-1. Unzip the release into Echo's `bin/win10` folder.
-2. Copy `LibOVRPlatform64_1.dll` and `LibOVRP2P64_1.dll` from a Windows PC's
-   `C:\Program Files\Oculus\Support\oculus-runtime\` into `bin/win10`.
-3. Start SteamVR, `monado-service` or `wivrn-server`, and wake the headset.
-4. Run `bin/win10/EchoXR/echoxr-linux.sh --check`, then without `--check`.
+1. Unzip the release into Echo's `bin/win10` folder. Nothing of Meta's is needed: EchoXR
+   brings its own `LibOVRPlatform64_1.dll` (no Oculus service, no Oculus account). Remove a
+   `LibOVRPlatform64_1.dll` from `bin/win10` itself if one is there; it would be used instead.
+2. Start SteamVR, `monado-service` or `wivrn-server`, and wake the headset.
+3. Run `bin/win10/EchoXR/echoxr-linux.sh --check`, then without `--check`.
 
 It needs Steam with Proton 9 or newer (or GE-Proton) and an active OpenXR runtime. No
 OpenVR runtime (xrizer, OpenComposite) is needed.
