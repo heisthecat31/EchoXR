@@ -30,6 +30,24 @@ Runtime& Runtime::Get()
 	return instance;
 }
 
+// EchoXR: whether the game's exe imports d3d11.dll (the event builds render with D3D11; the
+// live build loads its D3D12 renderer itself and imports neither).
+static bool ExeImportsD3D11()
+{
+	const BYTE* base = (const BYTE*)GetModuleHandleW(nullptr);
+	if (!base)
+		return false;
+	const IMAGE_DOS_HEADER* dos = (const IMAGE_DOS_HEADER*)base;
+	const IMAGE_NT_HEADERS* nt = (const IMAGE_NT_HEADERS*)(base + dos->e_lfanew);
+	const IMAGE_DATA_DIRECTORY& dir = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
+	if (!dir.VirtualAddress)
+		return false;
+	for (const IMAGE_IMPORT_DESCRIPTOR* d = (const IMAGE_IMPORT_DESCRIPTOR*)(base + dir.VirtualAddress); d->Name; ++d)
+		if (_stricmp((const char*)(base + d->Name), "d3d11.dll") == 0)
+			return true;
+	return false;
+}
+
 ovrResult Runtime::CreateInstance(XrInstance* out_Instance, const ovrInitParams* params)
 {
 	MinorVersion = params && params->Flags & ovrInit_RequestVersion ?
@@ -48,11 +66,18 @@ ovrResult Runtime::CreateInstance(XrInstance* out_Instance, const ovrInitParams*
 		wineVersion = (const char* (CDECL*)())GetProcAddress(ntdll, "wine_get_version");
 	Wine = wineVersion != nullptr;
 
+	char hint[16] = {};
+	GetEnvironmentVariableA("ECHOXR_GRAPHICS_API", hint, sizeof(hint));
+	const echoxr::GraphicsApi api = echoxr::GameApi(Wine, hint[0] ? hint : nullptr, ExeImportsD3D11());
+	Api = (int)api;
+	if (Wine)
+		EchoXR_Log("Under Wine one graphics API: %s", api == echoxr::GraphicsApi::D3D11 ? "D3D11" : "D3D12");
+
 	std::vector<std::string> offered;
 	for (const XrExtensionProperties& props : properties)
 		offered.push_back(props.extensionName);
-	m_extensions = echoxr::ChooseExtensions(Wine, offered);
-	for (const char* required : echoxr::RequiredExtensions(Wine))
+	m_extensions = echoxr::ChooseExtensions(Wine, api, offered);
+	for (const char* required : echoxr::RequiredExtensions(Wine, api))
 		if (std::find(offered.begin(), offered.end(), required) == offered.end())
 			EchoXR_Log("The OpenXR runtime doesn't offer %s, which EchoXR needs", required);
 

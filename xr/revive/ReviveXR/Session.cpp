@@ -99,7 +99,7 @@ ovrResult ovrHmdStruct::InitSession(XrInstance instance)
 ovrResult ovrHmdStruct::QueryAdapter()
 {
 	static_assert(sizeof(LUID) == sizeof(ovrGraphicsLuid), "The adapter LUID needs to fit in ovrGraphicsLuid");
-	if (echoxr::ProbeApi(Runtime::Get().Wine) == echoxr::GraphicsApi::D3D12)
+	if ((echoxr::GraphicsApi)Runtime::Get().Api == echoxr::GraphicsApi::D3D12)
 	{
 		XR_FUNCTION(Instance, GetD3D12GraphicsRequirementsKHR);
 		XrGraphicsRequirementsD3D12KHR graphicsReq = XR_TYPE(GRAPHICS_REQUIREMENTS_D3D12_KHR);
@@ -119,13 +119,13 @@ ovrResult ovrHmdStruct::QueryAdapter()
 // Reads the headset's field of view (and the play area's bounds) from a short-lived session,
 // before the game has handed over its graphics device: Echo asks for its render sizes first.
 // EchoXR: with no device where the runtime offers XR_MND_headless; else on a temporary
-// device of the API the game uses on this platform (D3D12 under Wine, so Proton's bridge
+// device of the API the game renders with (under Wine the only one enabled, so Proton's bridge
 // never sees two graphics APIs), on the runtime's adapter or else the first one. Every
 // runtime gets the wait for READY: SteamVR and WMR refuse to locate views before it.
 ovrResult ovrHmdStruct::ProbeViews()
 {
 	using Microsoft::WRL::ComPtr;
-	const bool d3d12 = echoxr::ProbeApi(Runtime::Get().Wine) == echoxr::GraphicsApi::D3D12;
+	const bool d3d12 = (echoxr::GraphicsApi)Runtime::Get().Api == echoxr::GraphicsApi::D3D12;
 	ComPtr<ID3D11Device> device11;
 	ComPtr<ID3D12Device> device12;
 	ComPtr<ID3D12CommandQueue> queue12;

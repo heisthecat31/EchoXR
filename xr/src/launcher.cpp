@@ -3,9 +3,10 @@
 //
 //   EchoXR.exe [--exe <name>] [--runtime steamvr|active] [--setup-only] [echo arguments...]
 //
-// It lives in bin\win10 next to echovr.exe and starts echovr_openxr.exe by default
-// (--exe picks another). First it sets up what's missing: echovr_openxr.exe, a patched
-// copy of echovr.exe (echoxr_common.h). Then, before launching:
+// It lives next to echovr.exe, in bin\win10 for the live build or bin\win7 for an event
+// build, and starts echovr_openxr.exe by default (--exe picks another). First it makes
+// echovr_openxr.exe, the build's patched copy of echovr.exe (echoxr_common.h), when it's
+// missing or out of date. Then, before launching:
 //   1. picks the OpenXR runtime: SteamVR on Windows (--runtime active: the system's),
 //      Proton's wineopenxr under Wine, which it sets up itself when Proton didn't
 //      (proton_vr.h: no OpenVR runtime needed).
@@ -13,7 +14,7 @@
 //   3. holds the "OculusHMDConnected" event. Echo's LibOVR shim calls ovr_Detect(),
 //      which opens this event to decide whether a headset is present; the Oculus
 //      service normally owns it. A plain named event -- no hooks, no injection.
-//   4. sets LIBOVR_DLL_DIR to bin\win10\EchoXR\ -- the directory Echo's own loader
+//   4. sets LIBOVR_DLL_DIR to its EchoXR\ folder -- the directory Echo's own loader
 //      checks FIRST for LibOVRRT64_1.dll -- and puts that folder on PATH so the
 //      runtime's openxr_loader.dll resolves. Only this launch sees these; a normal
 //      launch of Echo is untouched.
@@ -30,7 +31,7 @@
 
 // EchoXR.exe's own exit codes; anything else is Echo's.
 enum Exit {
-    kNotInGameFolder = 2,   // not next to echovr.exe in bin\win10
+    kNotInGameFolder = 2,   // not next to a known build's echovr.exe
     kRuntimeMissing = 3,    // EchoXR\LibOVRRT64_1.dll or openxr_loader.dll missing
     kSetupFailed = 4,       // echovr_openxr.exe couldn't be made
     kNoOpenXR = 5,          // no OpenXR runtime answered (or the VR service isn't running)
@@ -120,10 +121,10 @@ int wmain(int argc, wchar_t** argv) {
     wchar_t self[MAX_PATH];
     GetModuleFileNameW(nullptr, self, MAX_PATH);
     std::wstring dir = self;
-    dir = dir.substr(0, dir.find_last_of(L"\\/") + 1);          // the bin\win10 folder
+    dir = dir.substr(0, dir.find_last_of(L"\\/") + 1);          // the build's bin folder
     std::wstring xrDir = dir + L"EchoXR\\";
 
-    std::wstring exe = echoxr::kModdedExe;      // --exe <name> picks another executable in bin\win10
+    std::wstring exe = echoxr::kModdedExe;      // --exe <name> picks another executable in this folder
     std::wstring runtimeMode = L"steamvr";      // steamvr | active
     std::wstring passArgs;
     bool setupOnly = false;                     // --setup-only: do the first-run setup, don't launch
@@ -132,7 +133,9 @@ int wmain(int argc, wchar_t** argv) {
         if (a == L"--exe" && i + 1 < argc) { exe = argv[++i]; continue; }
         if (a == L"--runtime" && i + 1 < argc) { runtimeMode = argv[++i]; continue; }
         if (a == L"--setup-only") { setupOnly = true; continue; }
-        passArgs += L" \"" + a + L"\"";
+        // Quoted only when it has to be: the event builds' parser takes "-flag" for an unknown
+        // option and quits.
+        passArgs += a.find_first_of(L" \t\"") == std::wstring::npos ? L" " + a : L" \"" + a + L"\"";
     }
     if (echoxr::IsDir(xrDir))
         OpenLog(xrDir + L"launcher.log");
@@ -141,21 +144,26 @@ int wmain(int argc, wchar_t** argv) {
     const char* (CDECL* wineVersion)() = nullptr;
     if (HMODULE ntdll = GetModuleHandleW(L"ntdll.dll"))
         wineVersion = (const char* (CDECL*)())GetProcAddress(ntdll, "wine_get_version");
-    std::wstring gameDir = dir.substr(0, dir.size() - 1);
     if (!echoxr::Exists(dir + L"echovr.exe"))
-        return Fail(L"EchoXR.exe has to sit in Echo VR's bin\\win10 folder, next to echovr.exe "
-                    L"(with the EchoXR folder next to it)", kNotInGameFolder);
+        return Fail(L"EchoXR.exe has to sit next to echovr.exe, in Echo VR's bin\\win10 folder (an event "
+                    L"build's bin\\win7), with the EchoXR folder next to it", kNotInGameFolder);
     if (!echoxr::Exists(xrDir + L"LibOVRRT64_1.dll") || !echoxr::Exists(xrDir + L"openxr_loader.dll"))
         return Fail(L"EchoXR\\LibOVRRT64_1.dll or EchoXR\\openxr_loader.dll is missing: copy the whole "
                     L"EchoXR folder next to EchoXR.exe", kRuntimeMissing);
 
-    // first run: the patched game executable Echo needs to accept this runtime
-    if (!_wcsicmp(exe.c_str(), echoxr::kModdedExe) && !echoxr::Exists(dir + exe)) {
-        std::wstring err;
-        size_t off = 0;
-        if (!echoxr::MakeOpenXRExe(gameDir, err, &off))
-            return Fail(L"Couldn't create echovr_openxr.exe: " + err, kSetupFailed);
-        Log(L"created %ls (patched copy of echovr.exe, file offset 0x%zx)", echoxr::kModdedExe, off);
+    // the patched game executable Echo needs to accept this runtime: made on the first run,
+    // and again when an older EchoXR made it or the game was updated since
+    if (!_wcsicmp(exe.c_str(), echoxr::kModdedExe)) {
+        const echoxr::GameBuild* build = echoxr::BuildIn(dir);
+        if (!build)
+            return Fail(L"echovr.exe is a build EchoXR doesn't know, so it can't make echovr_openxr.exe", kSetupFailed);
+        Log(L"game build: %hs", build->name);
+        if (!echoxr::OpenXRExeCurrent(dir, *build)) {
+            std::wstring err;
+            if (!echoxr::MakeOpenXRExe(dir, *build, err))
+                return Fail(L"Couldn't create echovr_openxr.exe: " + err, kSetupFailed);
+            Log(L"created %ls (patched copy of echovr.exe, %d patch(es))", echoxr::kModdedExe, build->patchCount);
+        }
     }
     if (setupOnly) {
         Log(L"--setup-only: done, not launching");
@@ -218,12 +226,21 @@ int wmain(int argc, wchar_t** argv) {
     std::wstring newPath = xrDir + L";" + (n ? std::wstring(path, n) : L"");
     SetEnvironmentVariableW(L"PATH", newPath.c_str());
 
+    // The event builds (bin\win7) start from the game folder, as their own launchers and
+    // EchoRelay's scripts start them.
+    std::wstring workDir = dir;
+    if (workDir.size() > 6 && !_wcsicmp(workDir.c_str() + workDir.size() - 6, L"\\win7\\")) {
+        workDir = workDir.substr(0, workDir.size() - 1);
+        workDir = workDir.substr(0, workDir.find_last_of(L"\\/"));      // bin
+        workDir = workDir.substr(0, workDir.find_last_of(L"\\/") + 1);  // the game folder
+    }
+
     std::wstring cmd = L"\"" + dir + exe + L"\"" + passArgs;
-    Log(L"launching: %ls", cmd.c_str());
+    Log(L"launching: %ls (in %ls)", cmd.c_str(), workDir.c_str());
     STARTUPINFOW si = { sizeof(si) };
     PROCESS_INFORMATION pi = {};
     std::wstring mutableCmd = cmd;
-    if (!CreateProcessW(nullptr, &mutableCmd[0], nullptr, nullptr, FALSE, 0, nullptr, dir.c_str(), &si, &pi)) {
+    if (!CreateProcessW(nullptr, &mutableCmd[0], nullptr, nullptr, FALSE, 0, nullptr, workDir.c_str(), &si, &pi)) {
         const DWORD err = GetLastError();
         if (hmd) CloseHandle(hmd);
         return Fail(L"couldn't start " + exe + L" (error " + std::to_wstring(err) + L")", kStartFailed);

@@ -41,8 +41,10 @@ public:
 	ovrResult CreateInstance(XrInstance* out_Instance, const ovrInitParams* params);
 	bool Supports(const char* extensionName);
 
-	// Running under Wine/Proton (EchoXR): one graphics extension, D3D12, see echoxr_policy.h.
+	// Running under Wine/Proton (EchoXR): one graphics extension, the game's, see echoxr_policy.h.
 	bool Wine = false;
+	// EchoXR: the graphics API the game renders with (see echoxr_policy.h's GameApi).
+	int Api = 0;
 	bool Headless;
 	bool VisibilityMask;
 	bool CompositionDepth;

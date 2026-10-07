@@ -27,6 +27,12 @@ EchoXR for you. To set it up by hand, take the latest `EchoXR-OpenXR-v<version>.
 It needs Steam with Proton 9 or newer (or GE-Proton) and an active OpenXR runtime. No
 OpenVR runtime (xrizer, OpenComposite) is needed.
 
+## Event builds
+
+The 2018 Halloween build runs through EchoXR too, on the classic lobbies (EchoRelay). Unzip
+the release into its `bin\win7` folder instead of `bin\win10`; the rest is the same. The
+other event builds aren't supported yet: EchoXR refuses a build it doesn't know.
+
 ## When Echo doesn't start
 
 Look in `bin/win10/EchoXR/launcher.log` and `runtime.log`. EchoXR's exit codes:

@@ -12,13 +12,32 @@ namespace echoxr {
 // --- OpenXR instance extensions ----------------------------------------------------------
 //
 // Windows: Revive's set. D3D11 is required, the other graphics APIs are enabled when offered.
-// Wine/Proton: exactly one graphics API, D3D12, which Echo renders with. Proton's wineopenxr
-// turns each D3D11, D3D12 and Vulkan request into XR_KHR_vulkan_enable, and runtimes such as
-// SteamVR refuse an instance that names the same extension twice.
+// Wine/Proton: exactly one graphics API, the one the game renders with (GameApi). Proton's
+// wineopenxr turns each D3D11, D3D12 and Vulkan request into XR_KHR_vulkan_enable, and runtimes
+// such as SteamVR refuse an instance that names the same extension twice.
 
-inline std::vector<const char*> RequiredExtensions(bool wine)
+// The graphics API the game renders with, and so the one the field-of-view probe and the
+// adapter query use.
+enum class GraphicsApi { D3D11, D3D12 };
+
+// Windows: D3D11 (the other APIs are enabled too). Wine: ECHOXR_GRAPHICS_API ("d3d11" or
+// "d3d12") when set (EchoXR.exe sets it from its build table), else D3D11 when the game's exe
+// imports d3d11.dll (the 2017-2019 event builds), else D3D12 (the live build, which loads its
+// renderer itself).
+inline GraphicsApi GameApi(bool wine, const char* hint, bool importsD3D11)
 {
-	if (wine)
+	if (!wine)
+		return GraphicsApi::D3D11;
+	if (hint && strcmp(hint, "d3d11") == 0)
+		return GraphicsApi::D3D11;
+	if (hint && strcmp(hint, "d3d12") == 0)
+		return GraphicsApi::D3D12;
+	return importsD3D11 ? GraphicsApi::D3D11 : GraphicsApi::D3D12;
+}
+
+inline std::vector<const char*> RequiredExtensions(bool wine, GraphicsApi api)
+{
+	if (wine && api == GraphicsApi::D3D12)
 		return { "XR_KHR_win32_convert_performance_counter_time", "XR_KHR_D3D12_enable" };
 	return { "XR_KHR_win32_convert_performance_counter_time", "XR_KHR_D3D11_enable" };
 }
@@ -43,9 +62,9 @@ inline std::vector<const char*> OptionalExtensions(bool wine)
 
 // The extensions to enable, given what the runtime offers: every required one (instance
 // creation fails if one is missing, and says which), then the optional ones it has.
-inline std::vector<const char*> ChooseExtensions(bool wine, const std::vector<std::string>& offered)
+inline std::vector<const char*> ChooseExtensions(bool wine, GraphicsApi api, const std::vector<std::string>& offered)
 {
-	std::vector<const char*> chosen = RequiredExtensions(wine);
+	std::vector<const char*> chosen = RequiredExtensions(wine, api);
 	for (const char* name : OptionalExtensions(wine))
 		for (const std::string& o : offered)
 			if (o == name)
@@ -56,9 +75,6 @@ inline std::vector<const char*> ChooseExtensions(bool wine, const std::vector<st
 	return chosen;
 }
 
-// The graphics extension the field-of-view probe and the adapter query use.
-enum class GraphicsApi { D3D11, D3D12 };
-inline GraphicsApi ProbeApi(bool wine) { return wine ? GraphicsApi::D3D12 : GraphicsApi::D3D11; }
 
 // --- Swapchain formats ---------------------------------------------------------------------
 

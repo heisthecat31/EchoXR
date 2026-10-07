@@ -485,6 +485,9 @@ void InputManager::OculusTouch::GetSuggestedBindings(std::vector<ProfileBindings
 	outProfiles.push_back(GetLayoutBindings(Layout_Touch));
 	if (Runtime::Get().UseHack(Runtime::HACK_VALVE_INDEX_PROFILE))
 		outProfiles.push_back(GetLayoutBindings(Layout_Index));
+	// EchoXR: Monado doesn't convert the Touch profile to WMR controllers (its simulated ones
+	// included), which then get no binding at all; offering WMR's own costs nothing elsewhere.
+	outProfiles.push_back(GetLayoutBindings(Layout_WMR));
 }
 
 InputManager::ProfileBindings InputManager::OculusTouch::GetLayoutBindings(Layout layout) const
@@ -530,7 +533,9 @@ InputManager::ProfileBindings InputManager::OculusTouch::GetLayoutBindings(Layou
 	{
 		if (layout == Layout_WMR)
 		{
-			ADD_BINDING(m_Trackpad_Buttons, prefixes[i] + "/input/trackpad/y");
+			// EchoXR: only made on the WMR runtime; a null action makes the runtime reject the profile.
+			if ((XrAction)m_Trackpad_Buttons != XR_NULL_HANDLE)
+				ADD_BINDING(m_Trackpad_Buttons, prefixes[i] + "/input/trackpad/y");
 			ADD_BINDING(m_Button_AX, prefixes[i] + "/input/trackpad/click");
 			ADD_BINDING(m_Button_BY, prefixes[i] + "/input/trackpad/click");
 			ADD_BINDING(m_Touch_AX, prefixes[i] + "/input/trackpad/touch");

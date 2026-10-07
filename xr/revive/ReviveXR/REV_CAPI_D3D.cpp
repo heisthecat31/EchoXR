@@ -152,10 +152,10 @@ OVR_PUBLIC_FUNCTION(ovrResult) ovr_CreateTextureSwapChainDX(ovrSession session,
 	{
 		if (pDevice)
 		{
-			// EchoXR: under Wine only D3D12 is enabled (see echoxr_policy.h).
+			// EchoXR: under Wine only the game's API is enabled (see echoxr_policy.h's GameApi).
 			if (!Runtime::Get().Supports(XR_KHR_D3D11_ENABLE_EXTENSION_NAME))
 			{
-				EchoXR_Log("The game renders with D3D11, which EchoXR doesn't enable under Wine (D3D12 only)");
+				EchoXR_Log("The game renders with D3D11, but EchoXR enabled D3D12 under Wine (set ECHOXR_GRAPHICS_API=d3d11)");
 				return ovrError_Unsupported;
 			}
 

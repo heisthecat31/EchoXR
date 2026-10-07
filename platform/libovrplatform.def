@@ -1117,12 +1117,12 @@ EXPORTS
     ovrCloudStorageUpdateStatus_FromString=Stub_Noop
     ovrCloudStorageUpdateStatus_ToString=Stub_ToString
     ovrConfigOptionInternal_toString=Stub_Noop
-    ovrID_FromString=Stub_Noop
+    ovrID_FromString
     ovrID_ToString=Stub_ToString
     ovrInitConfigOption_toString=Stub_Noop
-    ovrKeyValuePair_makeDouble=Stub_Noop
-    ovrKeyValuePair_makeInt=Stub_Noop
-    ovrKeyValuePair_makeString=Stub_Noop
+    ovrKeyValuePair_makeDouble
+    ovrKeyValuePair_makeInt
+    ovrKeyValuePair_makeString
     ovrKeyValuePairType_FromString=Stub_Noop
     ovrKeyValuePairType_ToString=Stub_ToString
     ovrLaunchResult_FromString=Stub_Noop

@@ -142,13 +142,61 @@ __declspec(dllexport) bool ovr_IsPlatformInitialized() { PlatLog("IsPlatformInit
 // pnsovr then pops the message and treats "not an error" as entitled. Queue a non-error message.
 __declspec(dllexport) unsigned long long ovr_Entitlement_GetIsViewerEntitled() { PlatLog("Entitlement_GetIsViewerEntitled"); return Submit(MK_ENTITLE, nullptr, nullptr, nullptr); }
 
+// ---- key/value pairs and ids (header inlines in later SDKs; the event builds' pnsovr imports
+// them, e.g. for ovr_Room_UpdateDataStore, and dereferenced the stub's NULL) ----
+struct KeyValuePair {            // ovrKeyValuePair, 40 bytes
+  const char* key;
+  int valueType;                 // 0 string, 1 int, 2 double
+  const char* stringValue;
+  int intValue;
+  double doubleValue;
+};
+static_assert(sizeof(KeyValuePair) == 40, "ovrKeyValuePair layout");
+__declspec(dllexport) KeyValuePair ovrKeyValuePair_makeString(const char* key, const char* value) {
+  KeyValuePair kv = {}; kv.key = key; kv.valueType = 0; kv.stringValue = value; return kv;
+}
+__declspec(dllexport) KeyValuePair ovrKeyValuePair_makeInt(const char* key, int value) {
+  KeyValuePair kv = {}; kv.key = key; kv.valueType = 1; kv.intValue = value; return kv;
+}
+__declspec(dllexport) KeyValuePair ovrKeyValuePair_makeDouble(const char* key, double value) {
+  KeyValuePair kv = {}; kv.key = key; kv.valueType = 2; kv.doubleValue = value; return kv;
+}
+// ovrID (an unsigned 64-bit id) from its decimal text.
+__declspec(dllexport) bool ovrID_FromString(unsigned long long* out, const char* text) {
+  if (!out || !text || !*text) return false;
+  unsigned long long v = 0;
+  for (const char* p = text; *p; ++p) {
+    if (*p < '0' || *p > '9') return false;
+    v = v * 10 + (unsigned long long)(*p - '0');
+  }
+  *out = v;
+  return true;
+}
+
 // ---- synchronous logged-in id ----
 __declspec(dllexport) unsigned long long ovr_GetLoggedInUserID() { PlatLog("GetLoggedInUserID -> %llu", kAppScopedId); return kAppScopedId; }
 
 // ---- async user requests ----
 __declspec(dllexport) unsigned long long ovr_User_GetLoggedInUser() { return Submit(MK_USER, &g_user, nullptr, nullptr); }
 __declspec(dllexport) unsigned long long ovr_User_GetOrgScopedID(unsigned long long /*userId*/) { return Submit(MK_ORGID, nullptr, &g_org, nullptr); }
-__declspec(dllexport) unsigned long long ovr_User_GetAccessToken() { PlatLog("ovr_User_GetAccessToken"); return Submit(MK_TOKEN, nullptr, nullptr, "offline.fake.token"); }
+// The event builds' pnsovr asks for the token again as soon as it has one (a refresh loop that
+// the real service answers slowly). Answering every request at once made it spin hundreds of
+// thousands of times a minute and starved the game's login. The first is answered at once;
+// a refresh is answered 5 s later (ovr_PopMessage hands it out when due).
+static unsigned long long g_tokenReq = 0;      // a refresh waiting to be answered
+static ULONGLONG g_tokenDue = 0;
+__declspec(dllexport) unsigned long long ovr_User_GetAccessToken() {
+  static volatile LONG s_asked = 0;
+  if (InterlockedIncrement(&s_asked) == 1) { PlatLog("ovr_User_GetAccessToken"); return Submit(MK_TOKEN, nullptr, nullptr, "offline.fake.token"); }
+  EnsureCs(); EnterCriticalSection(&g_cs);
+  unsigned long long req = g_nextReq++;
+  g_tokenReq = req;
+  g_tokenDue = GetTickCount64() + 5000;
+  LeaveCriticalSection(&g_cs);
+  if (s_asked == 2) PlatLog("ovr_User_GetAccessToken again: refreshes are answered after 5 s");
+  return req;
+}
+
 __declspec(dllexport) unsigned long long ovr_User_GetLoggedInUserFriends() { return Submit(MK_FRIENDS, nullptr, nullptr, nullptr); }
 // The login may need the Oculus USER PROOF (a nonce). Real pnsovr imports
 // ovr_User_GetUserProof; if we leave it a no-op the game can spin waiting for the proof
@@ -163,6 +211,11 @@ __declspec(dllexport) void* ovr_PopMessage() {
   EnsureCs(); EnterCriticalSection(&g_cs);
   void* r = nullptr;
   if (g_qHead != g_qTail) { r = g_queue[g_qHead]; g_qHead = (g_qHead + 1) % 64; }
+  else if (g_tokenReq && GetTickCount64() >= g_tokenDue) {
+    FakeMsg* m = AllocMsg();                  // a token refresh that is due
+    if (m) { m->reqId = g_tokenReq; m->kind = MK_TOKEN; m->isError = false; m->user = nullptr; m->orgId = nullptr; m->str = "offline.fake.token"; r = m; }
+    g_tokenReq = 0;
+  }
   LeaveCriticalSection(&g_cs);
   // Diagnostic: count poll rate. A HUGE count with the login stuck = the game is
   // spin-waiting on an OVR async message we are not delivering.
@@ -393,23 +446,52 @@ __declspec(dllexport) unsigned long long ovr_OrgScopedID_GetID(void* o) { return
 //     pnsovr+0x98b5a:  74 27   je 0x...b83   ; paths match -> success
 // Flip it to an unconditional jmp (EB 27) so the stub always takes the success path,
 // then it proceeds to LoadLibrary + GetProcAddress + call our init/login normally.
+// The same idea on the event builds' older pnsovr (2018-2019): its Platform SDK loader
+// checks our DLL's Authenticode signature (WinVerifyTrust) and returns -1 unless it is
+// Oculus-signed. Its success test is one branch too, flipped the same way.
+//
+// One entry per pnsovr build, by its PE timestamp: the branch's RVA, the bytes expected
+// there (checked first; any other build is left alone) and the byte that replaces the first
+// byte of the branch.
+struct PnsovrPatch {
+  DWORD timestamp;
+  DWORD rva;
+  unsigned char expect[6];
+  int len;
+  int at;                // offset of the byte to replace, within expect
+  unsigned char with;
+  const char* what;
+};
+static const PnsovrPatch kPnsovrPatches[] = {
+  // The live build (34.4.631547.1): the preloaded DLL's path check (je -> jmp).
+  { 0x6452DF9B, 0x98b5a, { 0x74, 0x27 }, 2, 0, 0xeb, "preload-path check" },
+  // Halloween 2018 (16.0.253636.0): cmp r15d,1 ; je -> jmp, the signature check's success test.
+  { 0x5BC7B836, 0x11fab, { 0x41, 0x83, 0xff, 0x01, 0x74, 0x11 }, 6, 4, 0xeb, "signature check" },
+};
+
 static void PatchPnsovrLoaderCheck() {
   HMODULE h = GetModuleHandleW(L"pnsovr.dll");
   if (!h) h = GetModuleHandleW(L"pnsovr");
   if (!h) return;                                  // not mapped yet; caller retries
-  unsigned char* p = (unsigned char*)h + 0x98b5a;  // RVA of the path-compare 'je'
+  const IMAGE_DOS_HEADER* dos = (const IMAGE_DOS_HEADER*)h;
+  const IMAGE_NT_HEADERS* nt = (const IMAGE_NT_HEADERS*)((const unsigned char*)h + dos->e_lfanew);
+  DWORD stamp = nt->FileHeader.TimeDateStamp;
+  const PnsovrPatch* pp = nullptr;
+  for (const PnsovrPatch& c : kPnsovrPatches) if (c.timestamp == stamp) pp = &c;
+  if (!pp) { PlatLog("patch: pnsovr build 0x%08lX unknown -- not patched", stamp); return; }
+  unsigned char* p = (unsigned char*)h + pp->rva;
   DWORD oldProt;
-  if (!VirtualProtect(p, 2, PAGE_EXECUTE_READWRITE, &oldProt)) { PlatLog("patch: VirtualProtect failed"); return; }
-  if (p[0] == 0x74 && p[1] == 0x27) {
-    p[0] = 0xeb;                                   // je -> jmp : always accept the preloaded DLL
-    PlatLog("patch: pnsovr+0x98b5a je->jmp OK (preload-path check bypassed)");
-  } else if (p[0] == 0xeb) {
-    PlatLog("patch: pnsovr+0x98b5a already patched");
+  if (!VirtualProtect(p, pp->len, PAGE_EXECUTE_READWRITE, &oldProt)) { PlatLog("patch: VirtualProtect failed"); return; }
+  if (memcmp(p, pp->expect, pp->len) == 0) {
+    p[pp->at] = pp->with;                          // je -> jmp : always take the success path
+    PlatLog("patch: pnsovr+0x%lx %s bypassed (build 0x%08lX)", pp->rva + pp->at, pp->what, stamp);
+  } else if (p[pp->at] == pp->with) {
+    PlatLog("patch: pnsovr+0x%lx already patched", pp->rva + pp->at);
   } else {
-    PlatLog("patch: pnsovr+0x98b5a unexpected bytes %02x %02x — NOT patched", p[0], p[1]);
+    PlatLog("patch: pnsovr+0x%lx unexpected bytes -- NOT patched", pp->rva + pp->at);
   }
-  VirtualProtect(p, 2, oldProt, &oldProt);
-  FlushInstructionCache(GetCurrentProcess(), p, 2);
+  VirtualProtect(p, pp->len, oldProt, &oldProt);
+  FlushInstructionCache(GetCurrentProcess(), p, pp->len);
 }
 
 // pnsovr may not be enumerable via GetModuleHandle the instant our DllMain runs, so if
