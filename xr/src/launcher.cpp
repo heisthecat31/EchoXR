@@ -3,10 +3,10 @@
 //
 //   EchoXR.exe [--exe <name>] [--runtime steamvr|active] [--setup-only] [echo arguments...]
 //
-// It lives next to echovr.exe, in bin\win10 for the live build or bin\win7 for an event
-// build, and starts echovr_openxr.exe by default (--exe picks another). First it makes
-// echovr_openxr.exe, the build's patched copy of echovr.exe (echoxr_common.h), when it's
-// missing or out of date. Then, before launching:
+// It lives next to the game's executable, in bin\win10 for the live build or bin\win7 for an
+// event build (echovr.exe; EchoArena.exe for the 2017 ones), and starts echovr_openxr.exe by
+// default (--exe picks another). First it makes echovr_openxr.exe, the build's patched copy of
+// that executable (echoxr_common.h), when it's missing or out of date. Then, before launching:
 //   1. picks the OpenXR runtime: SteamVR on Windows (--runtime active: the system's),
 //      Proton's wineopenxr under Wine, which it sets up itself when Proton didn't
 //      (proton_vr.h: no OpenVR runtime needed).
@@ -31,7 +31,7 @@
 
 // EchoXR.exe's own exit codes; anything else is Echo's.
 enum Exit {
-    kNotInGameFolder = 2,   // not next to a known build's echovr.exe
+    kNotInGameFolder = 2,   // not next to the game's executable
     kRuntimeMissing = 3,    // EchoXR\LibOVRRT64_1.dll or openxr_loader.dll missing
     kSetupFailed = 4,       // echovr_openxr.exe couldn't be made
     kNoOpenXR = 5,          // no OpenXR runtime answered (or the VR service isn't running)
@@ -144,9 +144,10 @@ int wmain(int argc, wchar_t** argv) {
     const char* (CDECL* wineVersion)() = nullptr;
     if (HMODULE ntdll = GetModuleHandleW(L"ntdll.dll"))
         wineVersion = (const char* (CDECL*)())GetProcAddress(ntdll, "wine_get_version");
-    if (!echoxr::Exists(dir + L"echovr.exe"))
+    if (!echoxr::Exists(dir + L"echovr.exe") && !echoxr::Exists(dir + L"EchoArena.exe"))
         return Fail(L"EchoXR.exe has to sit next to echovr.exe, in Echo VR's bin\\win10 folder (an event "
-                    L"build's bin\\win7), with the EchoXR folder next to it", kNotInGameFolder);
+                    L"build's bin\\win7, next to echovr.exe or EchoArena.exe), with the EchoXR folder next to it",
+                    kNotInGameFolder);
     if (!echoxr::Exists(xrDir + L"LibOVRRT64_1.dll") || !echoxr::Exists(xrDir + L"openxr_loader.dll"))
         return Fail(L"EchoXR\\LibOVRRT64_1.dll or EchoXR\\openxr_loader.dll is missing: copy the whole "
                     L"EchoXR folder next to EchoXR.exe", kRuntimeMissing);
@@ -156,13 +157,13 @@ int wmain(int argc, wchar_t** argv) {
     if (!_wcsicmp(exe.c_str(), echoxr::kModdedExe)) {
         const echoxr::GameBuild* build = echoxr::BuildIn(dir);
         if (!build)
-            return Fail(L"echovr.exe is a build EchoXR doesn't know, so it can't make echovr_openxr.exe", kSetupFailed);
+            return Fail(L"The game is a build EchoXR doesn't know, so it can't make echovr_openxr.exe", kSetupFailed);
         Log(L"game build: %hs", build->name);
         if (!echoxr::OpenXRExeCurrent(dir, *build)) {
             std::wstring err;
             if (!echoxr::MakeOpenXRExe(dir, *build, err))
                 return Fail(L"Couldn't create echovr_openxr.exe: " + err, kSetupFailed);
-            Log(L"created %ls (patched copy of echovr.exe, %d patch(es))", echoxr::kModdedExe, build->patchCount);
+            Log(L"created %ls (patched copy of %ls, %d patch(es))", echoxr::kModdedExe, build->exe, build->patchCount);
         }
     }
     if (setupOnly) {

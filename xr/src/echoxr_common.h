@@ -51,9 +51,9 @@ inline DWORD WriteAll(const std::wstring& path, const void* data, size_t size) {
 // untouched). Which bytes change depends on the build, found by the exe's PE timestamp:
 //   - every build: its LibOVR runtime signature check always passes, so Echo accepts
 //     the unsigned EchoXR runtime.
-//   - the event builds: they set themselves up as Echo VR only when their exe is named
-//     echovr.exe (or echoarena.exe / echocombat.exe); under any other name they boot as
-//     Lone Echo and sit on its starfield. The copy skips that name check.
+//   - the event builds before Summer 2019: they set themselves up as Echo VR only under their
+//     own exe names (echovr.exe, echoarena.exe, echocombat.exe); under any other name they boot
+//     as Lone Echo and sit on its starfield. The copy skips that name check.
 // Each patch's original bytes are verified first; an unknown build is refused.
 // ---------------------------------------------------------------------------
 static const wchar_t* kModdedExe = L"echovr_openxr.exe";
@@ -82,6 +82,23 @@ static const GameBuild kBuilds[] = {
     { 0x5BC7B897, "Halloween 2018 (16.0.253636.0)", L"echovr.exe",
       { { 0xB6E2CA, { 0x83, 0xFE, 0x01, 0x74, 0x2C }, { 0x83, 0xFE, 0x01, 0xEB, 0x2C }, 5, 5 },   // signature check: je -> jmp
         { 0x957AB, { 0x75, 0x08 }, { 0x90, 0x90 }, 2, 2 } },                        // name check: jne -> nops
+      2 },
+    { 0x5C17F6B9, "Christmas 2018 (18.3.268902.0)", L"echovr.exe",
+      { { 0xBCBB7A, { 0x83, 0xFE, 0x01, 0x74, 0x2C }, { 0x83, 0xFE, 0x01, 0xEB, 0x2C }, 5, 5 },
+        { 0xA6CFB, { 0x75, 0x08 }, { 0x90, 0x90 }, 2, 2 } },
+      2 },
+    // Summer 2019's check is a function like the live build's; it has no name check.
+    { 0x5D388D3C, "Summer 2019 (23.2.340872.0)", L"echovr.exe",
+      { { 0xEE6970, { 0x48, 0x89, 0x5C, 0x24, 0x18, 0x48, 0x89, 0x74, 0x24, 0x20, 0x55, 0x57, 0x41, 0x56 },
+          { 0xB8, 0x01, 0x00, 0x00, 0x00, 0xC3 }, 14, 6 } },
+      1 },
+    { 0x5A39494F, "Christmas 2017 (Echo Arena 6.0)", L"EchoArena.exe",
+      { { 0x8C7EFA, { 0x83, 0xFE, 0x01, 0x74, 0x2C }, { 0x83, 0xFE, 0x01, 0xEB, 0x2C }, 5, 5 },
+        { 0x70260, { 0x75, 0x08 }, { 0x90, 0x90 }, 2, 2 } },          // its name check is for echoarena.exe
+      2 },
+    { 0x59E8F804, "Halloween 2017 (Echo Arena 1.76)", L"EchoArena.exe",
+      { { 0x88FD7A, { 0x83, 0xFE, 0x01, 0x74, 0x2C }, { 0x83, 0xFE, 0x01, 0xEB, 0x2C }, 5, 5 },
+        { 0x888E0, { 0x75, 0x08 }, { 0x90, 0x90 }, 2, 2 } },
       2 },
 };
 
