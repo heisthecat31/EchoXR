@@ -167,6 +167,29 @@ the whole session.
 
 ---
 
+## Changes in 0.5.0 (the event builds)
+
+Tested on Linux (Monado's simulated headset, GE-Proton11-3) with each build's own game server
+on the classic lobbies (EchoRelay): menu, PLAY, lobby.
+
+- **A table of game builds (`src/echoxr_common.h`).** `EchoXR.exe` finds the build by its
+  exe's PE timestamp and patches its copy for that build: the live build, Halloween 2017,
+  Christmas 2017 (`EchoArena.exe`), Halloween 2018, Christmas 2018 and Summer 2019. A build it
+  doesn't know is refused; a copy made from another build is made again.
+- **The exe-name check.** The event builds before Summer 2019 set themselves up as Echo VR
+  only under their own exe names; as `echovr_openxr.exe` they booted as Lone Echo and sat on
+  its starfield. The copy skips that check.
+- **Arguments (`launcher.cpp`).** Quoted only when needed: the old builds quit on `"-flag"`.
+  The event builds start from the game folder, as their own launchers start them.
+- **D3D11 under Wine (`echoxr_policy.h`'s `GameApi`).** The event builds render with D3D11
+  (their exe imports `d3d11.dll`), so OpenXR gets the D3D11 extension, not the live build's
+  D3D12. WMR controller bindings are suggested alongside Touch.
+- **The Platform SDK stand-in.** Each build's `pnsovr.dll` signature check is patched by its
+  timestamp; `ovrKeyValuePair_make*` and `ovrID_FromString` are implemented.
+- **Halloween 2017** also needs NvrMissingTextures (an EchoLoader plugin the launcher installs):
+  its published package lacks about 160 textures its first global level loads, and the game
+  crashes on them with or without EchoXR.
+
 ## Changes in 0.4.2 (no Meta at all)
 
 - **The Platform SDK (`platform/`).** Echo's `pnsovr.dll` signs in through Oculus'

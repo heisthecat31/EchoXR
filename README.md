@@ -29,9 +29,10 @@ OpenVR runtime (xrizer, OpenComposite) is needed.
 
 ## Event builds
 
-The 2018 Halloween build runs through EchoXR too, on the classic lobbies (EchoRelay). Unzip
-the release into its `bin\win7` folder instead of `bin\win10`; the rest is the same. The
-other event builds aren't supported yet: EchoXR refuses a build it doesn't know.
+The five event builds run through EchoXR too, on the classic lobbies (EchoRelay): Halloween
+2017, Christmas 2017, Halloween 2018, Christmas 2018 and Summer 2019. Unzip the release into
+the build's `bin\win7` folder instead of `bin\win10`; the rest is the same. EchoXR refuses a
+build it doesn't know.
 
 ## When Echo doesn't start
 
@@ -43,7 +44,7 @@ Look in `bin/win10/EchoXR/launcher.log` and `runtime.log`. EchoXR's exit codes:
 | 6 | no headset: connect it and wake it up |
 | 2, 3, 4, 7 | install problem: see the log |
 
-Only the current live build of Echo is supported.
+EchoXR supports the current live build and the five event builds.
 
 ## More
 
