@@ -5,6 +5,8 @@
 #include "HapticsBuffer.h"
 
 #include <openxr/openxr.h>
+#include "../../src/echoxr_pose.h"
+#include "../../src/echoxr_settings.h"
 #include <chrono>
 #include <mutex>
 #include <vector>
@@ -62,7 +64,7 @@ public:
 		bool IsReleased(XrSession session, ovrHandType hand = ovrHand_Left) const;
 		float GetAnalog(XrSession session, ovrHandType hand = ovrHand_Left) const;
 		ovrVector2f GetVector(XrSession session, ovrHandType hand = ovrHand_Left) const;
-		XrSpace CreateSpace(XrSession session, ovrHandType hand = ovrHand_Left) const;
+		XrSpace CreateSpace(XrSession session, ovrHandType hand = ovrHand_Left, const XrPosef& poseInActionSpace = { { 0, 0, 0, 1 }, { 0, 0, 0 } }) const;
 
 		operator XrAction() const { return m_Action; }
 
@@ -112,7 +114,9 @@ public:
 		// For WMR profile hack
 		Action m_Trackpad_Buttons;
 
-		Action m_Pose;
+		// EchoXR: both poses stay bound, EchoXR.txt's HandPose picks one when locating.
+		Action m_GripPose;
+		Action m_AimPose;
 		Action m_Vibration;
 		HapticsBuffer m_HapticsBuffer[ovrHand_Count];
 	};
@@ -191,6 +195,7 @@ public:
 
 	void GetTrackingState(ovrSession session, ovrTrackingState* outState, double absTime);
 	static void LogInteractionProfiles(XrInstance instance, XrSession session);
+	static bool PoseLogVariable();
 	ovrResult GetDevicePoses(ovrSession session, ovrTrackedDeviceType* deviceTypes, int deviceCount, double absTime, ovrPoseStatef* outDevicePoses);
 
 protected:
@@ -212,6 +217,42 @@ protected:
 	XrResult SyncActions(XrSession session);
 	void SyncIfStale(XrSession session);
 
-	static unsigned int SpaceRelationToPoseState(const XrSpaceLocation& location, double time, ovrPoseStatef& lastPoseState, ovrPoseStatef& outPoseState);
+	// EchoXR: action spaces 0-1 are the grip poses (left, right), 2-3 the aim poses.
+	static constexpr size_t kAimSpaces = 2;
+
+	// EchoXR: a pose with its velocities in the session's tracking space, and what the runtime
+	// said about it.
+	struct Located
+	{
+		echoxr::PoseMotion motion = {};
+		XrSpaceLocationFlags locationFlags = 0;
+		XrSpaceVelocityFlags velocityFlags = 0;
+		bool fallback = false;     // located at the frame's predicted time, not the one asked for
+	};
+	static Located LocateInTracking(ovrSession session, XrSpace space, XrTime time);
+	bool LocateHand(ovrSession session, int hand, XrTime time, const echoxr::ControllerSettings& settings,
+		Located& out, echoxr::PoseMotion* beforeOffset = nullptr) const;
+
+	// EchoXR: PoseLog = 1 in EchoXR.txt (or ECHOXR_POSE_LOG=1) logs, once a second, the aim
+	// pose and the hand pose Echo gets, both relative to the grip pose.
+	// Per hand, between two log lines: how many poses had valid velocities, how far ahead of
+	// now the game asked, how often the locate fell back to the frame's time, and the reported
+	// velocities against ones differentiated from consecutive poses (Echo throws and pushes off
+	// with them). An angular velocity the runtime gives in the controller's own frame instead of
+	// the tracking space's shows up as a small "local" error and a large "world" one.
+	struct PoseLogStats
+	{
+		int samples = 0, velocityValid = 0, fallbacks = 0, leadCount = 0, angCount = 0, linCount = 0;
+		double leadSum = 0.0, leadMin = 1e9, leadMax = -1e9;
+		double angRatio = 0.0, angErrWorld = 0.0, angErrLocal = 0.0, linRatio = 0.0, linErr = 0.0;
+		bool hasPrev = false;
+		ovrPoseStatef prev = {};
+	};
+	PoseLogStats m_PoseLogStats[ovrHand_Count];
+	std::chrono::steady_clock::time_point m_LastPoseLog;
+	void RecordPose(int hand, XrSpaceVelocityFlags velocityFlags, const ovrPoseStatef& pose, double lead, bool fallback);
+	void LogPoses(XrTime time, const echoxr::ControllerSettings& settings);
+
+	static unsigned int SpaceRelationToPoseState(const Located& location, double time, ovrPoseStatef& lastPoseState, ovrPoseStatef& outPoseState);
 };
 

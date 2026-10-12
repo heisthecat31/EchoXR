@@ -24,9 +24,38 @@ runtime itself works, and what was changed in Revive, is in [xr/README.md](../xr
 
 ## Launcher arguments
 
-`EchoXR.exe` has no window and no settings. It passes every argument it doesn't know on
+`EchoXR.exe` has no window. It passes every argument it doesn't know on
 to Echo; its own are `--runtime steamvr|active`, `--exe <name>` (another executable in
 `bin\win10`) and `--setup-only` (prepare `echovr_openxr.exe`, don't start Echo).
+
+## Controller settings (EchoXR.txt)
+
+`EchoXR\EchoXR.txt` holds the controller settings: `Key = Value` lines, `#` or `;` starts a
+comment. Without the file every setting has its default. EchoXR reads it again when it changes,
+so a change applies within half a second, also while you play; `runtime.log` lists the values in
+use and any line it ignored. The Echo VR launcher's **Controllers** plugin writes this file for
+you (and keeps it in every installed version); without the launcher, edit it by hand.
+`ECHOXR_SETTINGS` names another file.
+
+| Key | Values | Default | |
+|---|---|---|---|
+| `HandPose` | `grip`, `aim` | `grip` | `grip`: the grip pose moved to where LibOVR puts a Touch controller, the same on every runtime. `aim`: the runtime's aim pose as it is, as Revive did |
+| `Pitch`, `Yaw`, `Roll` | -45 to 45 (degrees) | 0 | turns the hand: pitch up, yaw inwards, roll outwards |
+| `OffsetX`, `OffsetY`, `OffsetZ` | -5 to 5 (cm) | 0 | moves the hand: inwards, up, forwards |
+| `ThumbstickDeadzone` | 0 to 0.5 | 0.24 | |
+| `TriggerDeadzone`, `GripDeadzone` | 0 to 0.3 | 0 | |
+| `Vibration` | 0 to 100 (%) | 100 | |
+| `MenuChord` | `off`, `xy` | `off` | `xy`: left X and Y together press Menu, for runtimes that keep the Menu button |
+| `RecenterOnStart` | 1, 0 | 1 | face forward when Echo starts (next start) |
+| `PoseLog` | 1, 0 | 0 | logs the hand poses and velocities once a second (as `ECHOXR_POSE_LOG=1`) |
+
+Directions are given for the right hand; the left hand is mirrored. The settings move and turn
+the hand Echo sees, never its speed: throws and pushes stay as strong as the headset measures
+them, whatever the file says.
+
+EchoXR locates the controllers in the runtime's own reference space and turns poses and
+velocities into Echo's recentered space itself: Virtual Desktop's runtime doesn't turn velocities
+into a reference space that has a pose of its own, and throws went off by the recenter's turn.
 
 ## Linux in detail
 

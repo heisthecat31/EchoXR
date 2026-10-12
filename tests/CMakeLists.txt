@@ -7,6 +7,13 @@ target_include_directories(runtime_units PRIVATE ${CMAKE_SOURCE_DIR}/xr/src)
 set_target_properties(runtime_units PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)
 add_test(NAME runtime_units COMMAND runtime_units)
 
+# The controller settings and pose math (xr/src/echoxr_settings.h, echoxr_pose.h); also builds
+# natively: c++ -std=c++17 -Ixr/src tests/controller_units.cpp
+add_executable(controller_units controller_units.cpp)
+target_include_directories(controller_units PRIVATE ${CMAKE_SOURCE_DIR}/xr/src)
+set_target_properties(controller_units PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)
+add_test(NAME controller_units COMMAND controller_units)
+
 # The built runtime, with no OpenXR runtime to talk to: it must fail cleanly, not crash.
 add_executable(smoke_no_runtime smoke_no_runtime.cpp)
 add_dependencies(smoke_no_runtime echoxr_runtime)

@@ -6,6 +6,7 @@
 #include "InputManager.h"
 
 #include "../../src/echoxr_policy.h"
+#include "../../src/echoxr_settings.h"
 
 #define XR_USE_GRAPHICS_API_D3D11
 #define XR_USE_GRAPHICS_API_D3D12
@@ -17,6 +18,9 @@
 #include <wrl/client.h>
 #include <chrono>
 #include <thread>
+
+// EchoXR.txt (xr/src/settings_file.cpp).
+echoxr::ControllerSettings EchoXR_Controls();
 
 using namespace std::chrono_literals;
 
@@ -302,6 +306,8 @@ ovrResult ovrHmdStruct::StartSession(void* graphicsBinding)
 	spaceInfo.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_STAGE;
 	CHK_XR(xrCreateReferenceSpace(Session, &spaceInfo, &OriginSpaces[ovrTrackingOrigin_FloorLevel]));
 	CHK_XR(xrCreateReferenceSpace(Session, &spaceInfo, &TrackingSpaces[ovrTrackingOrigin_FloorLevel]));
+	for (echoxr::Pose& pose : TrackingPoses)
+		pose = { { 0, 0, 0, 1 }, { 0, 0, 0 } };
 
 	// Update the visibility mask for both eyes
 	if (Runtime::Get().VisibilityMask)
@@ -338,7 +344,7 @@ ovrResult ovrHmdStruct::BeginSession()
 	// (ovr_WaitToBeginFrame), and a game that only calls ovr_SubmitFrame gets its first frame
 	// opened there.
 	FrameBegun = false;
-	RecenterPending = true;
+	RecenterPending = EchoXR_Controls().recenterOnStart;
 	return ovrSuccess;
 }
 
@@ -444,6 +450,9 @@ ovrResult ovrHmdStruct::RecenterSpace(ovrTrackingOrigin origin, XrSpace anchor, 
 	spaceInfo.poseInReferenceSpace = XR::Posef(newOrigin * offset);
 	CHK_XR(xrDestroySpace(TrackingSpaces[origin]));
 	CHK_XR(xrCreateReferenceSpace(Session, &spaceInfo, &TrackingSpaces[origin]));
+	const XrPosef& p = spaceInfo.poseInReferenceSpace;
+	TrackingPoses[origin] = { { p.orientation.x, p.orientation.y, p.orientation.z, p.orientation.w },
+		{ p.position.x, p.position.y, p.position.z } };
 	return ovrSuccess;
 }
 

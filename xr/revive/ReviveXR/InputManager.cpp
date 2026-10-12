@@ -4,12 +4,28 @@
 #include "Runtime.h"
 #include "OVR_CAPI.h"
 #include "XR_Math.h"
+#include "../../src/echoxr_pose.h"
+#include "../../src/echoxr_settings.h"
 
 #include <Windows.h>
 #include <openxr/openxr.h>
 #include <openxr/openxr_platform.h>
 #include <algorithm>
 #include <vector>
+
+// EchoXR.txt, read again when it changes (xr/src/settings_file.cpp).
+echoxr::ControllerSettings EchoXR_Controls();
+
+namespace
+{
+	echoxr::Pose FromXr(const XrPosef& p)
+	{
+		return { { p.orientation.x, p.orientation.y, p.orientation.z, p.orientation.w },
+			{ p.position.x, p.position.y, p.position.z } };
+	}
+
+	echoxr::Vec3 FromXr(const XrVector3f& v) { return { v.x, v.y, v.z }; }
+}
 
 // Oculus SDK defines that constant vibration lasts 2.5 seconds
 #define MAX_VIBRATION_DURATION 2500000000i64
@@ -62,6 +78,133 @@ void InputManager::LogInteractionProfiles(XrInstance instance, XrSession session
 		if (state.interactionProfile != XR_NULL_PATH)
 			xrPathToString(instance, state.interactionProfile, sizeof(name), &len, name);
 		EchoXR_Log("%s hand interaction profile: %s", i == ovrHand_Left ? "Left" : "Right", name);
+	}
+}
+
+bool InputManager::PoseLogVariable()
+{
+	static const bool enabled = []
+	{
+		char value[8] = "";
+		return GetEnvironmentVariableA("ECHOXR_POSE_LOG", value, sizeof(value)) > 0 && value[0] == '1';
+	}();
+	return enabled;
+}
+
+void InputManager::RecordPose(int hand, XrSpaceVelocityFlags velocityFlags, const ovrPoseStatef& pose, double lead, bool fallback)
+{
+	using namespace echoxr;
+	PoseLogStats& s = m_PoseLogStats[hand];
+	s.samples++;
+	s.fallbacks += fallback;
+	const XrSpaceVelocityFlags both = XR_SPACE_VELOCITY_LINEAR_VALID_BIT | XR_SPACE_VELOCITY_ANGULAR_VALID_BIT;
+	s.velocityValid += (velocityFlags & both) == both;
+	if (lead != 0.0)
+	{
+		s.leadCount++;
+		s.leadSum += lead;
+		s.leadMin = std::min(s.leadMin, lead);
+		s.leadMax = std::max(s.leadMax, lead);
+	}
+
+	auto length = [](Vec3 v) { return sqrtf(v.x * v.x + v.y * v.y + v.z * v.z); };
+	auto minus = [](Vec3 a, Vec3 b) { return Vec3{ a.x - b.x, a.y - b.y, a.z - b.z }; };
+	auto vec = [](const ovrVector3f& v) { return Vec3{ v.x, v.y, v.z }; };
+	auto quat = [](const ovrQuatf& q) { return Quat{ q.x, q.y, q.z, q.w }; };
+	const double dt = pose.TimeInSeconds - s.prev.TimeInSeconds;
+	if (s.hasPrev && dt > 0.004 && dt < 0.05)
+	{
+		// Differentiated velocities, in the tracking space: the orientation change q * prev^-1.
+		const Quat q = quat(pose.ThePose.Orientation);
+		const Quat p = quat(s.prev.ThePose.Orientation);
+		Quat d = Multiply(q, Quat{ -p.x, -p.y, -p.z, p.w });
+		if (d.w < 0.0f)
+			d = { -d.x, -d.y, -d.z, -d.w };
+		const float sinHalf = length(Vec3{ d.x, d.y, d.z });
+		const float angle = 2.0f * atan2f(sinHalf, d.w);
+		const Vec3 diffAng = sinHalf > 1e-6f ?
+			Vec3{ d.x / sinHalf * angle / float(dt), d.y / sinHalf * angle / float(dt), d.z / sinHalf * angle / float(dt) } : Vec3{ 0, 0, 0 };
+		const Vec3 cur = vec(pose.ThePose.Position), prev = vec(s.prev.ThePose.Position);
+		const Vec3 diffLin = { (cur.x - prev.x) / float(dt), (cur.y - prev.y) / float(dt), (cur.z - prev.z) / float(dt) };
+
+		// Reported: the mean of both samples, as the difference spans the interval between them.
+		const Vec3 ra = vec(pose.AngularVelocity), pa = vec(s.prev.AngularVelocity);
+		const Vec3 repAng = { (ra.x + pa.x) / 2, (ra.y + pa.y) / 2, (ra.z + pa.z) / 2 };
+		const Vec3 rl = vec(pose.LinearVelocity), pl = vec(s.prev.LinearVelocity);
+		const Vec3 repLin = { (rl.x + pl.x) / 2, (rl.y + pl.y) / 2, (rl.z + pl.z) / 2 };
+
+		const float diffAngLen = length(diffAng);
+		if (diffAngLen > 1.0f)
+		{
+			s.angCount++;
+			s.angRatio += length(repAng) / diffAngLen;
+			s.angErrWorld += length(minus(repAng, diffAng)) / diffAngLen;
+			s.angErrLocal += length(minus(Rotate(q, repAng), diffAng)) / diffAngLen;
+		}
+		const float diffLinLen = length(diffLin);
+		if (diffLinLen > 0.3f)
+		{
+			s.linCount++;
+			s.linRatio += length(repLin) / diffLinLen;
+			s.linErr += length(minus(repLin, diffLin)) / diffLinLen;
+		}
+	}
+	s.prev = pose;
+	s.hasPrev = true;
+}
+
+void InputManager::LogPoses(XrTime time, const echoxr::ControllerSettings& settings)
+{
+	const auto now = std::chrono::steady_clock::now();
+	if (m_ActionSpaces.size() < 2 * kAimSpaces || now - m_LastPoseLog < std::chrono::seconds(1))
+		return;
+	m_LastPoseLog = now;
+
+	// One line per hand: where a pose sits in the grip pose's frame, as an angle about an axis
+	// plus an offset in centimetres. Flags: the location's orientation/position valid bits.
+	auto describe = [](const echoxr::Pose& p, unsigned flags, char* out, size_t size)
+	{
+		float degrees;
+		echoxr::Vec3 axis;
+		echoxr::ToAxisAngle(p.orientation, degrees, axis);
+		snprintf(out, size, "%.1f deg about (%.2f %.2f %.2f), at (%.1f %.1f %.1f) cm, flags %x",
+			degrees, axis.x, axis.y, axis.z, p.position.x * 100.0f, p.position.y * 100.0f, p.position.z * 100.0f, flags);
+	};
+	const unsigned valid = XR_SPACE_LOCATION_ORIENTATION_VALID_BIT | XR_SPACE_LOCATION_POSITION_VALID_BIT;
+	for (int i = 0; i < ovrHand_Count; i++)
+	{
+		// The aim pose as the runtime puts it against the grip pose, and the hand Echo gets.
+		XrSpaceLocation location = XR_TYPE(SPACE_LOCATION);
+		if (XR_FAILED(xrLocateSpace(m_ActionSpaces[kAimSpaces + i], m_ActionSpaces[i], time, &location)))
+			location.locationFlags = 0;
+		const echoxr::Pose aimInGrip = FromXr(location.pose);
+		const echoxr::Pose user = echoxr::UserHandOffset(settings.pitch, settings.yaw, settings.roll,
+			settings.offsetX, settings.offsetY, settings.offsetZ, i);
+		const echoxr::Pose handInGrip = echoxr::Compose(
+			settings.handPose == echoxr::HandPose::Aim ? aimInGrip : echoxr::kGripToOvrHand, user);
+		char aim[160], hand[160];
+		describe(aimInGrip, (unsigned)(location.locationFlags & valid), aim, sizeof(aim));
+		describe(handInGrip, (unsigned)(location.locationFlags & valid), hand, sizeof(hand));
+		EchoXR_Log("Pose %s, from grip: aim %s; hand %s", i == ovrHand_Left ? "left" : "right", aim, hand);
+
+		PoseLogStats& s = m_PoseLogStats[i];
+		if (s.samples)
+		{
+			char lead[96] = "no time given";
+			if (s.leadCount)
+				snprintf(lead, sizeof(lead), "%.1f ms ahead (%.1f to %.1f)", s.leadSum / s.leadCount * 1000.0, s.leadMin * 1000.0, s.leadMax * 1000.0);
+			EchoXR_Log("Pose %s, motion: %d poses, velocities valid %d, %s, %d frame-time fallbacks; "
+				"turning %d: reported/differentiated %.2f, error world %.2f local %.2f; moving %d: ratio %.2f, error %.2f",
+				i == ovrHand_Left ? "left" : "right", s.samples, s.velocityValid, lead, s.fallbacks,
+				s.angCount, s.angCount ? s.angRatio / s.angCount : 0.0, s.angCount ? s.angErrWorld / s.angCount : 0.0,
+				s.angCount ? s.angErrLocal / s.angCount : 0.0,
+				s.linCount, s.linCount ? s.linRatio / s.linCount : 0.0, s.linCount ? s.linErr / s.linCount : 0.0);
+		}
+		const bool hasPrev = s.hasPrev;
+		const ovrPoseStatef prev = s.prev;
+		s = PoseLogStats();
+		s.hasPrev = hasPrev;
+		s.prev = prev;
 	}
 }
 
@@ -138,13 +281,14 @@ ovrResult InputManager::GetControllerVibrationState(ovrSession session, ovrContr
 	return ovrSuccess;
 }
 
-unsigned int InputManager::SpaceRelationToPoseState(const XrSpaceLocation& location, double time, ovrPoseStatef& lastPoseState, ovrPoseStatef& outPoseState)
+unsigned int InputManager::SpaceRelationToPoseState(const Located& location, double time, ovrPoseStatef& lastPoseState, ovrPoseStatef& outPoseState)
 {
 	unsigned int flags = 0;
+	const echoxr::PoseMotion& m = location.motion;
 
 	if (location.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT)
 	{
-		outPoseState.ThePose.Orientation = XR::Quatf(location.pose.orientation);
+		outPoseState.ThePose.Orientation = OVR::Quatf(m.pose.orientation.x, m.pose.orientation.y, m.pose.orientation.z, m.pose.orientation.w);
 		flags |= ovrStatus_OrientationValid;
 		flags |= (location.locationFlags & XR_SPACE_LOCATION_ORIENTATION_TRACKED_BIT) ? ovrStatus_OrientationTracked : 0;
 	}
@@ -155,7 +299,7 @@ unsigned int InputManager::SpaceRelationToPoseState(const XrSpaceLocation& locat
 
 	if (location.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT)
 	{
-		outPoseState.ThePose.Position = XR::Vector3f(location.pose.position);
+		outPoseState.ThePose.Position = OVR::Vector3f(m.pose.position.x, m.pose.position.y, m.pose.position.z);
 		flags |= ovrStatus_PositionValid;
 		flags |= (location.locationFlags & XR_SPACE_LOCATION_POSITION_TRACKED_BIT) ? ovrStatus_PositionTracked : 0;
 	}
@@ -164,11 +308,9 @@ unsigned int InputManager::SpaceRelationToPoseState(const XrSpaceLocation& locat
 		outPoseState.ThePose.Position = XR::Vector3f::Zero();
 	}
 
-	XrSpaceVelocity *spaceVelocity = (XrSpaceVelocity *) location.next;
-
-	if (spaceVelocity->velocityFlags & XR_SPACE_VELOCITY_ANGULAR_VALID_BIT)
+	if (location.velocityFlags & XR_SPACE_VELOCITY_ANGULAR_VALID_BIT)
 	{
-		XR::Vector3f currav(spaceVelocity->angularVelocity);
+		OVR::Vector3f currav(m.angular.x, m.angular.y, m.angular.z);
 		XR::Vector3f lastav(lastPoseState.AngularVelocity);
 		outPoseState.AngularVelocity = currav;
 		outPoseState.AngularAcceleration = time > lastPoseState.TimeInSeconds ?
@@ -180,9 +322,9 @@ unsigned int InputManager::SpaceRelationToPoseState(const XrSpaceLocation& locat
 		outPoseState.AngularAcceleration = XR::Vector3f::Zero();
 	}
 
-	if (spaceVelocity->velocityFlags & XR_SPACE_VELOCITY_LINEAR_VALID_BIT)
+	if (location.velocityFlags & XR_SPACE_VELOCITY_LINEAR_VALID_BIT)
 	{
-		XR::Vector3f currlv(spaceVelocity->linearVelocity);
+		OVR::Vector3f currlv(m.linear.x, m.linear.y, m.linear.z);
 		XR::Vector3f lastlv(lastPoseState.LinearVelocity);
 		outPoseState.LinearVelocity = currlv;
 		outPoseState.LinearAcceleration = time > lastPoseState.TimeInSeconds ?
@@ -199,6 +341,63 @@ unsigned int InputManager::SpaceRelationToPoseState(const XrSpaceLocation& locat
 	return flags;
 }
 
+InputManager::Located InputManager::LocateInTracking(ovrSession session, XrSpace space, XrTime time)
+{
+	// EchoXR: located against the plain reference space and turned into the tracking space
+	// (the recentered one) here. A runtime should rotate velocities into a base space that has
+	// a pose of its own, but Virtual Desktop's doesn't: the velocities then missed the
+	// recenter's turn, and throws went off by it.
+	const ovrTrackingOrigin origin = session->TrackingOrigin;
+	XrSpace base = session->OriginSpaces[origin];
+	XrSpaceVelocity velocity = XR_TYPE(SPACE_VELOCITY);
+	XrSpaceLocation location = XR_TYPE(SPACE_LOCATION);
+	location.next = &velocity;
+
+	Located out;
+	if (XR_FAILED(xrLocateSpace(space, base, time, &location)))
+	{
+		out.fallback = true;
+		location = XR_TYPE(SPACE_LOCATION);
+		location.next = &velocity;
+		velocity = XR_TYPE(SPACE_VELOCITY);
+		if (XR_FAILED(xrLocateSpace(space, base, (*session->CurrentFrame).predictedDisplayTime, &location)))
+			return out;
+	}
+
+	echoxr::PoseMotion m = { FromXr(location.pose), { 0, 0, 0 }, { 0, 0, 0 } };
+	if (velocity.velocityFlags & XR_SPACE_VELOCITY_LINEAR_VALID_BIT)
+		m.linear = FromXr(velocity.linearVelocity);
+	if (velocity.velocityFlags & XR_SPACE_VELOCITY_ANGULAR_VALID_BIT)
+		m.angular = FromXr(velocity.angularVelocity);
+	out.motion = echoxr::ToSpace(session->TrackingPoses[origin], m);
+	out.locationFlags = location.locationFlags;
+	out.velocityFlags = velocity.velocityFlags;
+	return out;
+}
+
+bool InputManager::LocateHand(ovrSession session, int hand, XrTime time, const echoxr::ControllerSettings& settings,
+	Located& out, echoxr::PoseMotion* beforeOffset) const
+{
+	if (m_ActionSpaces.size() < 2 * kAimSpaces)
+		return false;
+
+	// The grip pose moved to LibOVR's controller origin, as a point on the controller (its
+	// velocity includes the turn), or the aim pose as it is.
+	const bool aim = settings.handPose == echoxr::HandPose::Aim;
+	out = LocateInTracking(session, m_ActionSpaces[(aim ? kAimSpaces : 0) + hand], time);
+	if (!aim)
+		out.motion = echoxr::Attach(out.motion, echoxr::kGripToOvrHand, true);
+	if (beforeOffset)
+		*beforeOffset = out.motion;
+
+	// The player's turn and offset move the hand Echo sees, never its speed: the velocities
+	// stay those of the hand above, so no setting makes a throw or a push stronger.
+	const echoxr::Pose user = echoxr::UserHandOffset(settings.pitch, settings.yaw, settings.roll,
+		settings.offsetX, settings.offsetY, settings.offsetZ, hand);
+	out.motion = echoxr::Attach(out.motion, user, false);
+	return true;
+}
+
 void InputManager::GetTrackingState(ovrSession session, ovrTrackingState* outState, double absTime)
 {
 	double calledTime = absTime;
@@ -207,33 +406,41 @@ void InputManager::GetTrackingState(ovrSession session, ovrTrackingState* outSta
 		return;
 	std::lock_guard<std::mutex> lock(m_ActionMutex);
 	SyncIfStale(session->Session);
+	const echoxr::ControllerSettings settings = EchoXR_Controls();
+	const bool log = PoseLogVariable() || settings.poseLog;
 
 	if (absTime <= 0.0)
 		absTime = ovr_GetTimeInSeconds();
 
-	XrSpaceLocation location = XR_TYPE(SPACE_LOCATION);
-	XrSpaceVelocity velocity = XR_TYPE(SPACE_VELOCITY);
-	location.next = &velocity;
 	XrTime displayTime = AbsTimeToXrTime(session->Instance, absTime);
 	XrSpace space = session->TrackingSpaces[session->TrackingOrigin];
 
 	// Get the head space location
-	if (XR_FAILED(xrLocateSpace(session->ViewSpace, space, displayTime, &location)))
-		xrLocateSpace(session->ViewSpace, space, (*session->CurrentFrame).predictedDisplayTime, &location);
-	outState->StatusFlags = SpaceRelationToPoseState(location, absTime, m_LastTrackingState.HeadPose, outState->HeadPose);
+	const Located head = LocateInTracking(session, session->ViewSpace, displayTime);
+	outState->StatusFlags = SpaceRelationToPoseState(head, absTime, m_LastTrackingState.HeadPose, outState->HeadPose);
 
 	// Get the hand space locations
-	for (uint32_t i = 0; i < ovrHand_Count && i < m_ActionSpaces.size(); i++)
+	for (int i = 0; i < ovrHand_Count; i++)
 	{
-		XrSpaceLocation handLocation = XR_TYPE(SPACE_LOCATION);
-		handLocation.next = &velocity;
-		if (XR_FAILED(xrLocateSpace(m_ActionSpaces[i], space, displayTime, &handLocation)))
-			xrLocateSpace(m_ActionSpaces[i], space, (*session->CurrentFrame).predictedDisplayTime, &handLocation);
-		outState->HandStatusFlags[i] = SpaceRelationToPoseState(handLocation, absTime, m_LastTrackingState.HandPoses[i], outState->HandPoses[i]);
+		Located hand;
+		echoxr::PoseMotion beforeOffset;
+		if (!LocateHand(session, i, displayTime, settings, hand, &beforeOffset))
+			break;
+		outState->HandStatusFlags[i] = SpaceRelationToPoseState(hand, absTime, m_LastTrackingState.HandPoses[i], outState->HandPoses[i]);
+		if (log && (outState->HandStatusFlags[i] & ovrStatus_PositionValid))
+		{
+			// The log checks the velocities against the poses, before the player's offset (which
+			// moves the pose and deliberately not the velocity).
+			Located plain = hand;
+			plain.motion = beforeOffset;
+			ovrPoseStatef unused = m_LastTrackingState.HandPoses[i], pose;
+			SpaceRelationToPoseState(plain, absTime, unused, pose);
+			RecordPose(i, hand.velocityFlags, pose, calledTime > 0.0 ? calledTime - ovr_GetTimeInSeconds() : 0.0, hand.fallback);
+		}
 	}
 
 	XrSpace origin = session->OriginSpaces[session->TrackingOrigin];
-	location.next = nullptr;
+	XrSpaceLocation location = XR_TYPE(SPACE_LOCATION);
 	if (XR_FAILED(xrLocateSpace(space, origin, displayTime, &location)))
 		xrLocateSpace(space, origin, (*session->CurrentFrame).predictedDisplayTime, &location);
 
@@ -241,6 +448,9 @@ void InputManager::GetTrackingState(ovrSession session, ovrTrackingState* outSta
 		outState->CalibratedOrigin = XR::Posef(location.pose);
 	else
 		outState->CalibratedOrigin = OVR::Posef::Identity();
+
+	if (log)
+		LogPoses(displayTime, settings);
 
 	m_LastTrackingState = *outState;
 }
@@ -250,38 +460,35 @@ ovrResult InputManager::GetDevicePoses(ovrSession session, ovrTrackedDeviceType*
 	std::lock_guard<std::mutex> lock(m_ActionMutex);
 	if (session->Session)
 		SyncIfStale(session->Session);
+	const echoxr::ControllerSettings settings = EchoXR_Controls();
 
 	if (absTime <= 0.0)
 		absTime = ovr_GetTimeInSeconds();
 
 	XrTime displayTime = AbsTimeToXrTime(session->Instance, absTime);
-	XrSpaceLocation location = XR_TYPE(SPACE_LOCATION);
-	XrSpaceVelocity velocity = XR_TYPE(SPACE_VELOCITY);
-	location.next = &velocity;
 	for (int i = 0; i < deviceCount; i++)
 	{
-		// Get the space for device types we recognize
-		XrSpace space = XR_NULL_HANDLE;
+		// Locate the device types we recognize
+		Located located;
 		ovrPoseStatef* pLastState = nullptr;
 		switch (deviceTypes[i])
 		{
 			case ovrTrackedDevice_HMD:
-				space = session->ViewSpace;
+				located = LocateInTracking(session, session->ViewSpace, displayTime);
 				pLastState = &m_LastTrackingState.HeadPose;
 				break;
 			case ovrTrackedDevice_LTouch:
-				space = m_ActionSpaces[ovrHand_Left];
-				pLastState = &m_LastTrackingState.HandPoses[ovrHand_Left];
-				break;
 			case ovrTrackedDevice_RTouch:
-				space = m_ActionSpaces[ovrHand_Right];
-				pLastState = &m_LastTrackingState.HandPoses[ovrHand_Right];
+			{
+				const int hand = deviceTypes[i] == ovrTrackedDevice_LTouch ? ovrHand_Left : ovrHand_Right;
+				if (LocateHand(session, hand, displayTime, settings, located))
+					pLastState = &m_LastTrackingState.HandPoses[hand];
 				break;
+			}
 		}
 
-		if (space && pLastState)
-			CHK_XR(xrLocateSpace(space, session->TrackingSpaces[session->TrackingOrigin], displayTime, &location));
-		SpaceRelationToPoseState(location, absTime, *pLastState, outDevicePoses[i]);
+		ovrPoseStatef none = {};
+		SpaceRelationToPoseState(located, absTime, pLastState ? *pLastState : none, outDevicePoses[i]);
 	}
 
 	return ovrSuccess;
@@ -361,13 +568,13 @@ ovrVector2f InputManager::Action::GetVector(XrSession session, ovrHandType hand)
 	return XR::Vector2f(data.currentState);
 }
 
-XrSpace InputManager::Action::CreateSpace(XrSession session, ovrHandType hand) const
+XrSpace InputManager::Action::CreateSpace(XrSession session, ovrHandType hand, const XrPosef& poseInActionSpace) const
 {
 	XrSpace space;
 	XrActionSpaceCreateInfo spaceInfo = XR_TYPE(ACTION_SPACE_CREATE_INFO);
 	spaceInfo.action = m_Action;
 	spaceInfo.subactionPath = m_IsHanded ? s_SubActionPaths[hand] : XR_NULL_PATH;
-	spaceInfo.poseInActionSpace = XR::Posef::Identity();
+	spaceInfo.poseInActionSpace = poseInActionSpace;
 	XrResult rs = xrCreateActionSpace(session, &spaceInfo, &space);
 	assert(XR_SUCCEEDED(rs));
 	return space;
@@ -440,7 +647,8 @@ InputManager::OculusTouch::OculusTouch(XrInstance instance)
 	, m_IndexTrigger(this, XR_ACTION_TYPE_FLOAT_INPUT, "trigger", "Trigger button", true)
 	, m_HandTrigger(this, XR_ACTION_TYPE_FLOAT_INPUT, "grip", "Grip button", true)
 	, m_Thumbstick(this, XR_ACTION_TYPE_VECTOR2F_INPUT, "thumbstick", "Thumbstick", true)
-	, m_Pose(this, XR_ACTION_TYPE_POSE_INPUT, "pose", "Controller pose", true)
+	, m_GripPose(this, XR_ACTION_TYPE_POSE_INPUT, "grip-pose", "Controller grip pose", true)
+	, m_AimPose(this, XR_ACTION_TYPE_POSE_INPUT, "aim-pose", "Controller aim pose", true)
 	, m_Vibration(this, XR_ACTION_TYPE_VIBRATION_OUTPUT, "vibration", "Vibration", true)
 {
 	if (Runtime::Get().UseHack(Runtime::HACK_WMR_PROFILE))
@@ -453,9 +661,10 @@ InputManager::OculusTouch::~OculusTouch()
 
 void InputManager::OculusTouch::UpdateHaptics(XrSession session, XrDuration displayPeriod)
 {
+	const float strength = EchoXR_Controls().vibration;
 	for (int i = 0; i < ovrHand_Count; i++)
 	{
-		float amplitude = m_HapticsBuffer[i].GetSample();
+		float amplitude = echoxr::ScaleVibration(m_HapticsBuffer[i].GetSample(), strength);
 		if (amplitude > 0.0f)
 		{
 			XrHapticActionInfo info = XR_TYPE(HAPTIC_ACTION_INFO);
@@ -561,7 +770,10 @@ InputManager::ProfileBindings InputManager::OculusTouch::GetLayoutBindings(Layou
 			ADD_BINDING(m_IndexTrigger, prefixes[i] + "/input/trigger/value");
 		}
 
-		ADD_BINDING(m_Pose, prefixes[i] + "/input/aim/pose");
+		// EchoXR: both poses. The grip pose becomes LibOVR's controller pose (kGripToOvrHand),
+		// the same on every runtime; the aim pose, Revive's choice, is there for HandPose = aim.
+		ADD_BINDING(m_GripPose, prefixes[i] + "/input/grip/pose");
+		ADD_BINDING(m_AimPose, prefixes[i] + "/input/aim/pose");
 		ADD_BINDING(m_Vibration, prefixes[i] + "/output/haptic");
 	}
 
@@ -578,8 +790,11 @@ InputManager::ProfileBindings InputManager::OculusTouch::GetLayoutBindings(Layou
 
 void InputManager::OculusTouch::GetActionSpaces(XrSession session, std::vector<XrSpace>& outSpaces) const
 {
-	outSpaces.push_back(m_Pose.CreateSpace(session, ovrHand_Left));
-	outSpaces.push_back(m_Pose.CreateSpace(session, ovrHand_Right));
+	// Grip left/right, then aim left/right (InputManager::kAimSpaces).
+	outSpaces.push_back(m_GripPose.CreateSpace(session, ovrHand_Left));
+	outSpaces.push_back(m_GripPose.CreateSpace(session, ovrHand_Right));
+	outSpaces.push_back(m_AimPose.CreateSpace(session, ovrHand_Left));
+	outSpaces.push_back(m_AimPose.CreateSpace(session, ovrHand_Right));
 }
 
 void InputManager::OculusTouch::GetActiveSets(std::vector<XrActiveActionSet>& outSets) const
@@ -600,6 +815,8 @@ bool InputManager::OculusTouch::IsConnected() const
 
 void InputManager::OculusTouch::GetInputState(XrSession session, ovrControllerType controllerType, ovrInputState* inputState)
 {
+	const echoxr::ControllerSettings settings = EchoXR_Controls();
+
 	if (m_Button_Enter.GetDigital(session))
 		inputState->Buttons |= ovrButton_Enter;
 
@@ -673,9 +890,9 @@ void InputManager::OculusTouch::GetInputState(XrSession session, ovrControllerTy
 		}
 
 		// Apply deadzones where needed
-		inputState->Thumbstick[i] = ApplyDeadzone(inputState->ThumbstickNoDeadzone[i], 0.24f);
-		inputState->IndexTrigger[i] = inputState->IndexTriggerNoDeadzone[i];
-		inputState->HandTrigger[i] = inputState->HandTriggerNoDeadzone[i];
+		inputState->Thumbstick[i] = ApplyDeadzone(inputState->ThumbstickNoDeadzone[i], settings.thumbstickDeadzone);
+		inputState->IndexTrigger[i] = echoxr::ApplyTriggerDeadzone(inputState->IndexTriggerNoDeadzone[i], settings.triggerDeadzone);
+		inputState->HandTrigger[i] = echoxr::ApplyTriggerDeadzone(inputState->HandTriggerNoDeadzone[i], settings.gripDeadzone);
 
 		// We have no way to get raw values
 		inputState->ThumbstickRaw[i] = inputState->ThumbstickNoDeadzone[i];
@@ -685,6 +902,9 @@ void InputManager::OculusTouch::GetInputState(XrSession session, ovrControllerTy
 		inputState->Buttons |= (hand == ovrHand_Left) ? buttons << 8 : buttons;
 		inputState->Touches |= (hand == ovrHand_Left) ? touches << 8 : touches;
 	}
+
+	// EchoXR: Menu from a chord, for runtimes that keep the Menu button to themselves.
+	inputState->Buttons = echoxr::ApplyMenuChord(inputState->Buttons, settings.menuChord);
 }
 
 ovrResult InputManager::OculusTouch::SetVibration(XrSession session, ovrControllerType controllerType, float frequency, float amplitude)
@@ -695,12 +915,14 @@ ovrResult InputManager::OculusTouch::SetVibration(XrSession session, ovrControll
 	if (controllerType & ovrControllerType_RTouch)
 		subPaths.push_back(s_SubActionPaths[ovrHand_Right]);
 
+	// EchoXR: at the player's vibration strength (EchoXR.txt).
+	amplitude = echoxr::ScaleVibration(amplitude, EchoXR_Controls().vibration);
 	for (XrPath path : subPaths)
 	{
 		XrHapticActionInfo info = XR_TYPE(HAPTIC_ACTION_INFO);
 		info.action = m_Vibration;
 		info.subactionPath = path;
-		if (frequency > 0.0f)
+		if (frequency > 0.0f && amplitude > 0.0f)
 		{
 			XrHapticVibration vibration = XR_TYPE(HAPTIC_VIBRATION);
 			vibration.frequency = XR_FREQUENCY_UNSPECIFIED;

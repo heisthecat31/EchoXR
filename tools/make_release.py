@@ -36,6 +36,10 @@ XR_FILES = [
     ("@linux/echoxr-linux.sh",  "EchoXR/echoxr-linux.sh"),
 ]
 
+# EchoXR\EchoXR.txt is the player's (the launcher keeps it): a release must never carry one,
+# or unpacking it would reset their controller settings.
+assert not any(dst.lower().endswith("echoxr.txt") for _, dst in XR_FILES)
+
 # Licences of what the three binaries contain (relative to the build tree, or "@" ROOT).
 NOTICES = [
     ("EchoXR's runtime: Revive / ReviveXR (LibreVR) -- MIT License",
@@ -85,6 +89,12 @@ Echo VR through OpenXR: on SteamVR on Windows, and through Proton on Linux.
 No Oculus or Meta app, no Visual C++ runtime.
 
 """ + INSTALL_XR + "\n" + LINUX + """
+Controller settings
+-------------------
+EchoXR\\EchoXR.txt, if you make one: Key = Value lines, read again while you play.
+docs/ADVANCED.md in EchoXR's repository lists them; the Echo VR launcher's Controllers
+plugin writes the file for you.
+
 Logs
 ----
 EchoXR\\launcher.log        every launch: the runtime and headset found, Echo's exit code

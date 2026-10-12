@@ -4,6 +4,7 @@
 #include "Extras/OVR_Math.h"
 
 #include <openxr/openxr.h>
+#include "../../src/echoxr_pose.h"
 #include <atomic>
 #include <condition_variable>
 #include <map>
@@ -59,6 +60,10 @@ struct ovrHmdStruct
 	std::atomic<ovrTrackingOrigin> TrackingOrigin;
 	XrSpace OriginSpaces[ovrTrackingOrigin_Count];
 	XrSpace	TrackingSpaces[ovrTrackingOrigin_Count];
+	// EchoXR: each tracking space's pose in its origin space (what recentering gave it), so
+	// poses and velocities can be located in the origin space and turned into it here.
+	echoxr::Pose TrackingPoses[ovrTrackingOrigin_Count] = {
+		{ { 0, 0, 0, 1 }, { 0, 0, 0 } }, { { 0, 0, 0, 1 }, { 0, 0, 0 } } };
 
 	// Frame state
 	XrIndexedFrameState FrameStats[ovrMaxProvidedFrameStats];

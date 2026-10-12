@@ -106,7 +106,8 @@ add_library(echoxr_runtime SHARED
     ${REVIVE}/Externals/glad/src/glad.c
     ${ovr_sdk_SOURCE_DIR}/LibOVR/Shim/OVR_CAPI_Util.cpp
     ${ovr_sdk_SOURCE_DIR}/LibOVR/Shim/OVR_StereoProjection.cpp
-    xr/src/xr_main.cpp)
+    xr/src/xr_main.cpp
+    xr/src/settings_file.cpp)
 set_target_properties(echoxr_runtime PROPERTIES OUTPUT_NAME LibOVRRT64_1 PREFIX "")
 # ReviveXR's own folder stays off the include path: its OVR_CAPI.h wraps the SDK's
 # <OVR_CAPI.h>, and quoted includes find the folder's files anyway.
