@@ -1,48 +1,74 @@
-// EchoXR launcher -- starts Echo VR on the OpenXR runtime (SteamVR), no Oculus software.
+// EchoXR launcher -- starts Echo VR on an OpenXR runtime, no Oculus software. No UI: all it
+// has to say goes to EchoXR\launcher.log, and how it ended to its exit code.
 //
 //   EchoXR.exe [--exe <name>] [--runtime steamvr|active] [--setup-only] [echo arguments...]
 //
-// It lives in bin\win10 next to echovr.exe and starts echovr_openxr.exe by default
-// (--exe picks another). First it sets up what's missing: echovr_openxr.exe, a patched
-// copy of echovr.exe (echoxr_common.h), and -- from EchoXR\Hands\install\ -- the hand
-// tracking plugin and plugin loader (SetupHands). Hand tracking is its own release
-// (heisthecat31/EchoXR-Hands): with "AutoStartHands = 1" it's downloaded when missing
-// and offered when there's a newer one (updater::CheckHands).
-// Then it does three things before launching:
-//   1. holds the "OculusHMDConnected" event. Echo's LibOVR shim calls ovr_Detect(),
+// It lives next to the game's executable, in bin\win10 for the live build or bin\win7 for an
+// event build (echovr.exe; EchoArena.exe for the 2017 ones), and starts echovr_openxr.exe by
+// default (--exe picks another). First it makes echovr_openxr.exe, the build's patched copy of
+// that executable (echoxr_common.h), when it's missing or out of date. Then, before launching:
+//   1. picks the OpenXR runtime: SteamVR on Windows (--runtime active: the system's),
+//      Proton's wineopenxr under Wine, which it sets up itself when Proton didn't
+//      (proton_vr.h: no OpenVR runtime needed).
+//   2. checks that the runtime answers and has a headset (preflight.h).
+//   3. holds the "OculusHMDConnected" event. Echo's LibOVR shim calls ovr_Detect(),
 //      which opens this event to decide whether a headset is present; the Oculus
 //      service normally owns it. A plain named event -- no hooks, no injection.
-//   2. sets LIBOVR_DLL_DIR to bin\win10\EchoXR\ -- the directory Echo's own loader
+//   4. sets LIBOVR_DLL_DIR to its EchoXR\ folder -- the directory Echo's own loader
 //      checks FIRST for LibOVRRT64_1.dll -- and puts that folder on PATH so the
 //      runtime's openxr_loader.dll resolves. Only this launch sees these; a normal
 //      launch of Echo is untouched.
-//   3. logs which OpenXR runtime is active (SteamVR, VDXR, ...).
-// Then it starts Echo with the remaining arguments and waits for it to exit. With
-// "AutoStartHands = 1" in EchoXR\echoxr.ini it also runs the finger bridge
-// (EchoXR\Hands\EchoXRHands.exe) for as long as Echo runs, and with
-// "AutoStartSettings = 1" it opens the settings window (EchoXRSettings.exe) too.
+// Then it starts Echo with the remaining arguments, waits for it to exit and returns its
+// exit code. Its own failures have codes of their own (see Exit below and the README).
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <shellapi.h>
-#include <tlhelp32.h>
 #include <stdio.h>
 #include <string>
 #include "echoxr_common.h"
-#include "updater.h"
+#include "preflight.h"
+#include "proton_vr.h"
+
+// EchoXR.exe's own exit codes; anything else is Echo's.
+enum Exit {
+    kNotInGameFolder = 2,   // not next to the game's executable
+    kRuntimeMissing = 3,    // EchoXR\LibOVRRT64_1.dll or openxr_loader.dll missing
+    kSetupFailed = 4,       // echovr_openxr.exe couldn't be made
+    kNoOpenXR = 5,          // no OpenXR runtime answered (or the VR service isn't running)
+    kNoHeadset = 6,         // the runtime has no headset (not connected, or asleep)
+    kStartFailed = 7,       // Echo couldn't be started
+};
 
 static FILE* g_log = nullptr;
 static void Log(const wchar_t* fmt, ...) {
+    SYSTEMTIME t;
+    GetLocalTime(&t);
     va_list ap;
     va_start(ap, fmt);
     vfwprintf(stdout, fmt, ap);
     va_end(ap);
     fputwc(L'\n', stdout);
     if (g_log) {
+        fwprintf(g_log, L"[%02d:%02d:%02d] ", t.wHour, t.wMinute, t.wSecond);
         va_start(ap, fmt);
         vfwprintf(g_log, fmt, ap);
         va_end(ap);
         fputwc(L'\n', g_log);
         fflush(g_log);
+    }
+}
+
+// launcher.log keeps earlier launches (each starts with a dated line) up to about 1 MB.
+static void OpenLog(const std::wstring& path) {
+    WIN32_FILE_ATTRIBUTE_DATA data;
+    const bool big = GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &data) &&
+                     (data.nFileSizeHigh || data.nFileSizeLow > 1024 * 1024);
+    _wfopen_s(&g_log, path.c_str(), big ? L"w" : L"a");
+    if (g_log) {
+        SYSTEMTIME t;
+        GetLocalTime(&t);
+        fwprintf(g_log, L"\n===== %04d-%02d-%02d %02d:%02d:%02d =====\n", t.wYear, t.wMonth, t.wDay,
+                 t.wHour, t.wMinute, t.wSecond);
     }
 }
 
@@ -84,80 +110,10 @@ static std::wstring SteamVROpenXRJson() {
     return GetFileAttributesW(json.c_str()) != INVALID_FILE_ATTRIBUTES ? json : L"";
 }
 
-// "Key = 1" in a small INI-style file (whitespace and case around the key ignored).
-static bool ReadIniFlag(const std::wstring& path, const char* key, bool dflt = false) {
-    FILE* f = nullptr;
-    if (_wfopen_s(&f, path.c_str(), L"rb") || !f) return dflt;
-    char line[512];
-    bool on = dflt;
-    size_t klen = strlen(key);
-    while (fgets(line, sizeof(line), f)) {
-        char* p = line;
-        while (*p == ' ' || *p == '\t') ++p;
-        if (_strnicmp(p, key, klen)) continue;
-        p += klen;
-        while (*p == ' ' || *p == '\t') ++p;
-        if (*p != '=') continue;
-        ++p;
-        while (*p == ' ' || *p == '\t') ++p;
-        on = *p == '1' || !_strnicmp(p, "true", 4) || !_strnicmp(p, "yes", 3);
-    }
-    fclose(f);
-    return on;
-}
-
-static bool IsRunning(const wchar_t* name) {
-    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-    if (snap == INVALID_HANDLE_VALUE) return false;
-    PROCESSENTRY32W pe = { sizeof(pe) };
-    bool found = false;
-    for (BOOL ok = Process32FirstW(snap, &pe); ok && !found; ok = Process32NextW(snap, &pe))
-        found = !_wcsicmp(pe.szExeFile, name);
-    CloseHandle(snap);
-    return found;
-}
-
-// The bridge is a console app: give it its own console, minimised and unfocused.
-static HANDLE StartBridge(const std::wstring& exe) {
-    std::wstring cmd = L"\"" + exe + L"\" --print";
-    std::wstring wd = exe.substr(0, exe.find_last_of(L'\\'));
-    STARTUPINFOW si = { sizeof(si) };
-    si.dwFlags = STARTF_USESHOWWINDOW;
-    si.wShowWindow = SW_SHOWMINNOACTIVE;
-    PROCESS_INFORMATION pi = {};
-    if (!CreateProcessW(nullptr, &cmd[0], nullptr, nullptr, FALSE, CREATE_NEW_CONSOLE, nullptr, wd.c_str(), &si, &pi))
-        return nullptr;
-    CloseHandle(pi.hThread);
-    return pi.hProcess;
-}
-
-// The settings window (EchoXRSettings.exe): shown next to Echo without taking focus.
-static HANDLE StartSettings(const std::wstring& exe, DWORD* pid) {
-    std::wstring cmd = L"\"" + exe + L"\"";
-    std::wstring wd = exe.substr(0, exe.find_last_of(L'\\'));
-    STARTUPINFOW si = { sizeof(si) };
-    si.dwFlags = STARTF_USESHOWWINDOW;
-    si.wShowWindow = SW_SHOWNOACTIVATE;
-    PROCESS_INFORMATION pi = {};
-    if (!CreateProcessW(nullptr, &cmd[0], nullptr, nullptr, FALSE, 0, nullptr, wd.c_str(), &si, &pi))
-        return nullptr;
-    CloseHandle(pi.hThread);
-    *pid = pi.dwProcessId;
-    return pi.hProcess;
-}
-
-// Asks a process's top-level windows to close, so the settings window saves first.
-static BOOL CALLBACK CloseWindowsOf(HWND w, LPARAM pid) {
-    DWORD owner = 0;
-    GetWindowThreadProcessId(w, &owner);
-    if (owner == (DWORD)pid) PostMessageW(w, WM_CLOSE, 0, 0);
-    return TRUE;
-}
-
-// Fatal setup problem: log it, and show it too (a double-clicked console closes at once).
+// A setup problem: logged, and the exit code says which.
 static int Fail(const std::wstring& msg, int code) {
-    Log(L"ERROR: %ls", msg.c_str());
-    MessageBoxW(nullptr, msg.c_str(), L"EchoXR", MB_OK | MB_ICONERROR);
+    Log(L"ERROR: %ls (exit code %d)", msg.c_str(), code);
+    if (g_log) fclose(g_log);
     return code;
 }
 
@@ -165,86 +121,51 @@ int wmain(int argc, wchar_t** argv) {
     wchar_t self[MAX_PATH];
     GetModuleFileNameW(nullptr, self, MAX_PATH);
     std::wstring dir = self;
-    dir = dir.substr(0, dir.find_last_of(L"\\/") + 1);          // the bin\win10 folder
+    dir = dir.substr(0, dir.find_last_of(L"\\/") + 1);          // the build's bin folder
     std::wstring xrDir = dir + L"EchoXR\\";
 
-    std::wstring exe = echoxr::kModdedExe;      // --exe <name> picks another executable in bin\win10
+    std::wstring exe = echoxr::kModdedExe;      // --exe <name> picks another executable in this folder
     std::wstring runtimeMode = L"steamvr";      // steamvr | active
-    std::wstring passArgs, relaunchArgs;
+    std::wstring passArgs;
     bool setupOnly = false;                     // --setup-only: do the first-run setup, don't launch
-    bool checkUpdate = false, afterUpdate = false;
     for (int i = 1; i < argc; ++i) {
         std::wstring a = argv[i];
-        if (a == L"--check-update") { checkUpdate = true; continue; }   // check GitHub now
-        if (a == L"--after-update") { afterUpdate = true; continue; }   // started by the updater
-        relaunchArgs += L" \"" + a + L"\"";
-        if (a == L"--exe" && i + 1 < argc) { exe = argv[++i]; relaunchArgs += L" \"" + exe + L"\""; continue; }
-        if (a == L"--runtime" && i + 1 < argc) { runtimeMode = argv[++i]; relaunchArgs += L" \"" + runtimeMode + L"\""; continue; }
+        if (a == L"--exe" && i + 1 < argc) { exe = argv[++i]; continue; }
+        if (a == L"--runtime" && i + 1 < argc) { runtimeMode = argv[++i]; continue; }
         if (a == L"--setup-only") { setupOnly = true; continue; }
-        passArgs += L" \"" + a + L"\"";
+        // Quoted only when it has to be: the event builds' parser takes "-flag" for an unknown
+        // option and quits.
+        passArgs += a.find_first_of(L" \t\"") == std::wstring::npos ? L" " + a : L" \"" + a + L"\"";
     }
-    _wfopen_s(&g_log, (xrDir + L"launcher.log").c_str(), afterUpdate ? L"a" : L"w");
+    if (echoxr::IsDir(xrDir))
+        OpenLog(xrDir + L"launcher.log");
 
     Log(L"EchoXR launcher %hs", ECHOXR_VERSION);
     const char* (CDECL* wineVersion)() = nullptr;
     if (HMODULE ntdll = GetModuleHandleW(L"ntdll.dll"))
         wineVersion = (const char* (CDECL*)())GetProcAddress(ntdll, "wine_get_version");
-    std::wstring gameDir = dir.substr(0, dir.size() - 1);
-    if (!echoxr::Exists(dir + L"echovr.exe"))
-        return Fail(L"EchoXR.exe has to sit in Echo VR's bin\\win10 folder, next to echovr.exe.\n\n"
-                    L"Copy EchoXR.exe and the EchoXR folder into ...\\ready-at-dawn-echo-arena\\bin\\win10\\.", 2);
-    if (!echoxr::Exists(xrDir + L"LibOVRRT64_1.dll"))
-        return Fail(L"EchoXR\\LibOVRRT64_1.dll is missing. Copy the whole EchoXR folder next to EchoXR.exe.", 2);
+    if (!echoxr::Exists(dir + L"echovr.exe") && !echoxr::Exists(dir + L"EchoArena.exe"))
+        return Fail(L"EchoXR.exe has to sit next to echovr.exe, in Echo VR's bin\\win10 folder (an event "
+                    L"build's bin\\win7, next to echovr.exe or EchoArena.exe), with the EchoXR folder next to it",
+                    kNotInGameFolder);
+    if (!echoxr::Exists(xrDir + L"LibOVRRT64_1.dll") || !echoxr::Exists(xrDir + L"openxr_loader.dll"))
+        return Fail(L"EchoXR\\LibOVRRT64_1.dll or EchoXR\\openxr_loader.dll is missing: copy the whole "
+                    L"EchoXR folder next to EchoXR.exe", kRuntimeMissing);
 
-    // a newer release on GitHub? (updater.h; not under Wine, which has no tar.exe)
-    if (!afterUpdate && !wineVersion && (checkUpdate || ReadIniFlag(xrDir + L"echoxr.ini", "CheckForUpdates", true)) &&
-        updater::CheckAndUpdate(dir, xrDir, checkUpdate, relaunchArgs + L" --after-update", Log)) {
-        Log(L"update: started the new EchoXR.exe");
-        if (g_log) fclose(g_log);
-        return 0;
-    }
-
-    // first run: the patched game executable Echo needs to accept this runtime
-    if (!_wcsicmp(exe.c_str(), echoxr::kModdedExe) && !echoxr::Exists(dir + exe)) {
-        std::wstring err;
-        size_t off = 0;
-        if (!echoxr::MakeOpenXRExe(gameDir, err, &off))
-            return Fail(L"Couldn't create echovr_openxr.exe: " + err + L".", 4);
-        Log(L"created %ls (patched copy of echovr.exe, file offset 0x%zx)", echoxr::kModdedExe, off);
-    }
-    // EchoXR\echoxr.ini, written once and never shipped, so an unzip or update never
-    // overwrites the player's choices. Hand tracking starts switched on when it's here.
-    std::wstring bridge = xrDir + L"Hands\\EchoXRHands.exe";
-    std::wstring settingsExe = xrDir + L"Hands\\EchoXRSettings.exe";
-    if (!echoxr::Exists(xrDir + L"echoxr.ini")) {
-        std::string ini = std::string("# EchoXR launcher settings\r\n"
-                                      "# 1 = EchoXR.exe also runs the hand tracking bridge (EchoXR\\Hands\\EchoXRHands.exe)\r\n"
-                                      "#     while Echo runs, and downloads EchoXR Hands first if it isn't installed\r\n"
-                                      "AutoStartHands = ") + (echoxr::Exists(bridge) ? "1" : "0") + "\r\n"
-                          "# 1 = EchoXR.exe also opens the hand tracking settings window (EchoXRSettings.exe)\r\n"
-                          "AutoStartSettings = 0\r\n"
-                          "# 0 = don't check GitHub for EchoXR and EchoXR Hands updates\r\n"
-                          "CheckForUpdates = 1\r\n";
-        echoxr::WriteAll(xrDir + L"echoxr.ini", ini.data(), ini.size());
-        Log(L"created EchoXR\\echoxr.ini (AutoStartHands = %ls)", echoxr::Exists(bridge) ? L"1" : L"0");
-    }
-    bool hands = ReadIniFlag(xrDir + L"echoxr.ini", "AutoStartHands");
-
-    // hand tracking from its own release: installed when switched on but missing, else
-    // checked for updates like EchoXR. Not while the bridge or settings window runs
-    // (their files would be replaced), and not under Wine (no tar.exe).
-    if (hands) {
-        bool missing = !echoxr::Exists(bridge);
-        if (wineVersion) {
-            if (missing) Log(L"hand tracking: not installed -- unzip EchoXR-Hands-v*.zip from "
-                             L"github.com/heisthecat31/EchoXR-Hands/releases into bin/win10");
-        } else if (IsRunning(L"EchoXRHands.exe") || IsRunning(L"EchoXRSettings.exe")) {
-            Log(L"hands update: the bridge or settings window is running -- skipped");
-        } else if (missing || checkUpdate || ReadIniFlag(xrDir + L"echoxr.ini", "CheckForUpdates", true)) {
-            updater::CheckHands(dir, xrDir, checkUpdate, Log);
+    // the patched game executable Echo needs to accept this runtime: made on the first run,
+    // and again when an older EchoXR made it or the game was updated since
+    if (!_wcsicmp(exe.c_str(), echoxr::kModdedExe)) {
+        const echoxr::GameBuild* build = echoxr::BuildIn(dir);
+        if (!build)
+            return Fail(L"The game is a build EchoXR doesn't know, so it can't make echovr_openxr.exe", kSetupFailed);
+        Log(L"game build: %hs", build->name);
+        if (!echoxr::OpenXRExeCurrent(dir, *build)) {
+            std::wstring err;
+            if (!echoxr::MakeOpenXRExe(dir, *build, err))
+                return Fail(L"Couldn't create echovr_openxr.exe: " + err, kSetupFailed);
+            Log(L"created %ls (patched copy of %ls, %d patch(es))", echoxr::kModdedExe, build->exe, build->patchCount);
         }
     }
-    echoxr::SetupHands(gameDir, xrDir + L"Hands\\install\\", Log);   // plugin + loader
     if (setupOnly) {
         Log(L"--setup-only: done, not launching");
         if (g_log) fclose(g_log);
@@ -272,6 +193,23 @@ int wmain(int argc, wchar_t** argv) {
         }
     }
 
+    // Under Proton: OpenXR on for this launch, even with no OpenVR runtime.
+    if (wineVersion) {
+        bool didSetUp = false;
+        if (!protonvr::EnsureOpenXR(Log, didSetUp))
+            return Fail(L"OpenXR isn't available in this Proton prefix (see above)", kNoOpenXR);
+        // Proton's OpenVR values are missing then; keep DXVK from waiting for them.
+        if (didSetUp)
+            SetEnvironmentVariableW(L"DXVK_NO_VR", L"1");
+    }
+
+    // The runtime answers, and has a headset.
+    switch (preflight::Check(xrDir + L"openxr_loader.dll", Log)) {
+    case preflight::NoRuntime: return Fail(L"no OpenXR runtime answered", kNoOpenXR);
+    case preflight::NoHeadset: return Fail(L"the OpenXR runtime has no headset", kNoHeadset);
+    case preflight::Ok: break;
+    }
+
     // 1. headset-present signal for ovr_Detect()
     HANDLE hmd = CreateEventW(nullptr, TRUE, TRUE, L"OculusHMDConnected");
     DWORD evErr = GetLastError();
@@ -289,64 +227,27 @@ int wmain(int argc, wchar_t** argv) {
     std::wstring newPath = xrDir + L";" + (n ? std::wstring(path, n) : L"");
     SetEnvironmentVariableW(L"PATH", newPath.c_str());
 
+    // The event builds (bin\win7) start from the game folder, as their own launchers and
+    // EchoRelay's scripts start them.
+    std::wstring workDir = dir;
+    if (workDir.size() > 6 && !_wcsicmp(workDir.c_str() + workDir.size() - 6, L"\\win7\\")) {
+        workDir = workDir.substr(0, workDir.size() - 1);
+        workDir = workDir.substr(0, workDir.find_last_of(L"\\/"));      // bin
+        workDir = workDir.substr(0, workDir.find_last_of(L"\\/") + 1);  // the game folder
+    }
+
     std::wstring cmd = L"\"" + dir + exe + L"\"" + passArgs;
-    Log(L"launching: %ls", cmd.c_str());
+    Log(L"launching: %ls (in %ls)", cmd.c_str(), workDir.c_str());
     STARTUPINFOW si = { sizeof(si) };
     PROCESS_INFORMATION pi = {};
     std::wstring mutableCmd = cmd;
-    if (!CreateProcessW(nullptr, &mutableCmd[0], nullptr, nullptr, FALSE, 0, nullptr, dir.c_str(), &si, &pi)) {
-        Log(L"ERROR: could not start %ls (error %lu)", exe.c_str(), GetLastError());
-        return 3;
+    if (!CreateProcessW(nullptr, &mutableCmd[0], nullptr, nullptr, FALSE, 0, nullptr, workDir.c_str(), &si, &pi)) {
+        const DWORD err = GetLastError();
+        if (hmd) CloseHandle(hmd);
+        return Fail(L"couldn't start " + exe + L" (error " + std::to_wstring(err) + L")", kStartFailed);
     }
 
-    // 3. hand tracking: EchoXR\echoxr.ini "AutoStartHands = 1" (set by the installer)
-    //    starts the finger bridge next to Echo, restarts it if it drops out (e.g. SteamVR
-    //    wasn't up yet), and closes it when Echo exits.
-    HANDLE hb = nullptr;
-    DWORD lastStart = 0;
-    int starts = 0;
-    if (hands && IsRunning(L"EchoXRHands.exe")) {
-        Log(L"hand tracking: EchoXRHands.exe is already running");
-        hands = false;
-    } else if (hands && GetFileAttributesW(bridge.c_str()) == INVALID_FILE_ATTRIBUTES) {
-        Log(L"hand tracking: %ls is missing -- it couldn't be downloaded (see above)", bridge.c_str());
-        hands = false;
-    }
-    // 4. EchoXR\echoxr.ini "AutoStartSettings = 1": the settings window opens with Echo
-    //    and is closed (saving any pending change) when Echo exits.
-    HANDLE hs = nullptr;
-    DWORD settingsPid = 0;
-    if (ReadIniFlag(xrDir + L"echoxr.ini", "AutoStartSettings")) {
-        if (IsRunning(L"EchoXRSettings.exe")) Log(L"settings: EchoXRSettings.exe is already open");
-        else if (!echoxr::Exists(settingsExe)) Log(L"settings: %ls is missing -- reinstall EchoXR Hands", settingsExe.c_str());
-        else {
-            hs = StartSettings(settingsExe, &settingsPid);
-            Log(hs ? L"settings: opened EchoXRSettings.exe" : L"settings: could not start EchoXRSettings.exe (error %lu)", GetLastError());
-        }
-    }
-    for (;;) {
-        if (hands && (!hb || WaitForSingleObject(hb, 0) == WAIT_OBJECT_0) && starts < 20 &&
-            (!starts || GetTickCount() - lastStart > 5000)) {
-            if (hb) { CloseHandle(hb); hb = nullptr; }
-            hb = StartBridge(bridge);
-            lastStart = GetTickCount();
-            ++starts;
-            Log(hb ? L"hand tracking: started EchoXRHands.exe (%d)" : L"hand tracking: could not start EchoXRHands.exe (%d)", starts);
-        }
-        if (WaitForSingleObject(pi.hProcess, hands ? 1000 : INFINITE) == WAIT_OBJECT_0) break;
-    }
-    if (hb) {
-        if (WaitForSingleObject(hb, 0) == WAIT_TIMEOUT) { TerminateProcess(hb, 0); Log(L"hand tracking: stopped EchoXRHands.exe"); }
-        CloseHandle(hb);
-    }
-    if (hs) {
-        if (WaitForSingleObject(hs, 0) == WAIT_TIMEOUT) {
-            EnumWindows(CloseWindowsOf, (LPARAM)settingsPid);
-            if (WaitForSingleObject(hs, 3000) == WAIT_TIMEOUT) Log(L"settings: EchoXRSettings.exe is still open (left running)");
-            else Log(L"settings: closed EchoXRSettings.exe");
-        }
-        CloseHandle(hs);
-    }
+    WaitForSingleObject(pi.hProcess, INFINITE);
     DWORD code = 0;
     GetExitCodeProcess(pi.hProcess, &code);
     Log(L"Echo exited with code %lu", code);

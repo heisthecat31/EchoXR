@@ -1,0 +1,70 @@
+# Builds EchoXR with MSVC on every push, runs its tests, and keeps the release zip as an
+# artifact. A v* tag publishes it as a GitHub release (a prerelease when the tag has "-rc").
+name: build
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+  pull_request:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: MSVC developer environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Ninja
+        run: choco install ninja --no-progress -y
+
+      - name: Cache fetched sources
+        uses: actions/cache@v4
+        with:
+          path: build/windows-msvc/_deps/*-subbuild/*-populate-prefix/src/*.tar.gz
+          key: deps-${{ hashFiles('CMakeLists.txt') }}
+
+      - name: Configure
+        run: cmake --preset windows-msvc
+
+      - name: Build
+        run: cmake --build --preset windows-msvc
+
+      - name: Test
+        run: ctest --preset windows-msvc
+
+      # Job logs need a GitHub login; annotations don't. On a failure, the test log goes
+      # into one, readable from the checks API.
+      - name: Test log as an annotation
+        if: failure()
+        shell: pwsh
+        run: |
+          $log = Get-Content build/windows-msvc/Testing/Temporary/LastTest.log -Raw -ErrorAction SilentlyContinue
+          if ($log) {
+            if ($log.Length -gt 60000) { $log = $log.Substring($log.Length - 60000) }
+            $esc = $log.Replace('%', '%25').Replace("`r", '').Replace("`n", '%0A')
+            Write-Output "::error title=ctest::$esc"
+          }
+
+      - name: Package
+        run: python tools/make_release.py
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: EchoXR-${{ github.sha }}
+          path: build/windows-msvc/release/*
+
+      - name: Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: build/windows-msvc/release/*
+          prerelease: ${{ contains(github.ref_name, '-rc') }}
+          generate_release_notes: true

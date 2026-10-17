@@ -1,12 +1,12 @@
-# EchoXR — Echo VR on SteamVR through OpenXR
+# EchoXR — Echo VR through OpenXR
 
-EchoXR runs Echo VR on SteamVR, with no Oculus runtime in the path. Echo was
-written against Oculus's LibOVR API. EchoXR answers those calls with an OpenXR
-implementation, so the game renders and tracks through SteamVR's OpenXR runtime,
-or any other OpenXR runtime you choose.
+EchoXR runs Echo VR with no Oculus runtime in the path. Echo was written against
+Oculus's LibOVR API. EchoXR answers those calls with an OpenXR implementation, so the
+game renders and tracks through SteamVR's OpenXR runtime on Windows, through Proton's
+wineopenxr on Linux (SteamVR, Monado, WiVRn), or any other OpenXR runtime you choose.
 
-It ships as part of the EchoXR release zip and `EchoXRSetup.exe` (see the
-[top-level README](../README.md)).
+It ships as the `EchoXR-OpenXR-v<version>.zip` release (see the
+[README](../README.md)).
 
 ---
 
@@ -19,9 +19,8 @@ check always passes. The function at RVA `0x1365bd0` starts with
 `mov eax,1 ; ret` (6 bytes) instead of its prologue. `echovr.exe` itself is
 never changed, so normal launches are unaffected.
 
-The copy is made on the player's own machine: by `EchoXR.exe` on its first
-launch, or by `EchoXRSetup.exe` as part of the EchoXR component. Both use
-`src/echoxr_common.h`, which first checks the 14 prologue bytes
+The copy is made on the player's own machine, by `EchoXR.exe` on its first
+launch. It uses `src/echoxr_common.h`, which first checks the 14 prologue bytes
 (`48 89 5C 24 18 48 89 74 24 20 55 57 41 56`); on any other game build it refuses
 and leaves nothing behind. No game binary ships with this project. Uninstalling
 EchoXR deletes the copy.
@@ -34,8 +33,9 @@ EchoXR deletes the copy.
 | --- | --- | --- |
 | `LibOVRRT64_1.dll` | `bin\win10\EchoXR\` | The runtime. Revive's OpenXR backend ("ReviveXR", MIT), built under the Oculus runtime's DLL name. It implements every one of the 93 `ovr_*` functions Echo uses (125 in total) on top of OpenXR. |
 | `openxr_loader.dll` | `bin\win10\EchoXR\` | The official Khronos OpenXR loader, built from source (OpenXR SDK 1.1.63). |
+| `LibOVRPlatform64_1.dll` | `bin\win10\EchoXR\` | The Oculus Platform SDK, answered without Meta (`platform/`, by marshmallow-mia). The game's `pnsovr.dll` signs in through it: a signed-in user with a per-machine id (salted SHA-256 of the NIC's MAC under Wine, of Windows' MachineGuid otherwise; the Steam name as display name when there is one), entitled, and the microphone through WASAPI. Meta's loader needs the Oculus service and an Oculus account. |
 | `EchoXR.exe` | `bin\win10\` | The launcher, described below. |
-| `echovr_openxr.exe` | `bin\win10\` | The patched copy of `echovr.exe`, made on your machine by the launcher or the installer (see above). |
+| `echovr_openxr.exe` | `bin\win10\` | The patched copy of `echovr.exe`, made on your machine by the launcher (see above). |
 
 The runtime lives in its own `EchoXR\` subfolder on purpose. Echo searches its
 own folder first for its runtime, so a runtime placed there would take over
@@ -44,43 +44,39 @@ points Echo at it. Starting `echovr.exe` the usual way is unaffected.
 
 ### The launcher, `EchoXR.exe`
 
-Source: `src/launcher.cpp`. It sets up one launch, starts Echo and waits for it
-to exit:
+Source: `src/launcher.cpp`, with `src/proton_vr.h` and `src/preflight.h`. It has no
+window: it sets up one launch, starts Echo, waits for it to exit and returns Echo's exit
+code, or one of its own (listed in [docs/ADVANCED.md](../docs/ADVANCED.md)).
 
-0. **Checks for an update** (`src/updater.h`), at most once every 20 hours: the
-   latest GitHub release of `heisthecat31/EchoXR`, compared with the version built
-   in from `VERSION`. A newer `EchoXR-v*.zip` is offered, downloaded, checked,
-   unpacked over the install with Windows' `tar.exe`, and started in place of
-   the running launcher, which is renamed to `EchoXR.exe.old` rather than
-   overwritten. `CheckForUpdates = 0` in `EchoXR\echoxr.ini` turns it off, and
-   `--check-update` checks now.
 1. **Checks and sets up.** `EchoXR.exe` has to be next to `echovr.exe`, and
-   `EchoXR\LibOVRRT64_1.dll` has to exist; otherwise it says so in a message box.
-   If `echovr_openxr.exe` is missing, it makes it (see above). From a release
-   zip, it also installs or updates the hand tracking plugin and plugin loader from
-   `EchoXR\Hands\install\`, following the same loader rules as the installer.
-   `--setup-only` stops here.
+   `EchoXR\LibOVRRT64_1.dll` and `openxr_loader.dll` have to exist. If
+   `echovr_openxr.exe` is missing, it makes it (see above). `--setup-only` stops here.
 2. **Chooses the VR runtime.** It finds SteamVR through Steam's own registry
    (`%LOCALAPPDATA%\openvr\openvrpaths.vrpath`). It then points this launch at
    SteamVR's `steamxr_win64.json` via the loader's `XR_RUNTIME_JSON` variable.
    This matters because some apps (the Virtual Desktop streamer, for one) keep
    making themselves the system-wide OpenXR runtime. `--runtime active` uses the
    system runtime instead. Under Wine/Proton (it checks for `wine_get_version`) it
-   leaves the choice to Proton, whose registered runtime is `wineopenxr`; see
-   "Linux" in the top-level README.
-3. **Tells Echo a headset is present.** Echo checks for the named Windows event
+   leaves the choice to Proton, whose registered runtime is `wineopenxr`.
+3. **Under Proton: makes sure OpenXR is on** (`src/proton_vr.h`). Proton's own VR
+   setup only gets to OpenXR after it has started an OpenVR client. When it didn't
+   (no OpenVR runtime, VR service not up yet), `EchoXR.exe` calls the same
+   `wineopenxr_init_registry` export Proton calls, with a 20 s limit, and marks the
+   prefix's volatile `HKCU\Software\Wine\VR` key ready. See "Linux in detail" in
+   [docs/ADVANCED.md](../docs/ADVANCED.md).
+4. **Checks the runtime and the headset** (`src/preflight.h`). Through
+   `EchoXR\openxr_loader.dll` it creates an OpenXR instance (20 s limit) and asks for a
+   head-mounted system, waiting up to 15 s for one that's asleep. The runtime's and the
+   headset's names go into the log.
+5. **Tells Echo a headset is present.** Echo checks for the named Windows event
    `OculusHMDConnected` before it starts VR; normally the Oculus service creates
    it. The launcher creates it when nothing else has.
-4. **Points Echo at the runtime folder.** It sets `LIBOVR_DLL_DIR` to
+6. **Points Echo at the runtime folder.** It sets `LIBOVR_DLL_DIR` to
    `bin\win10\EchoXR\`, the first place Echo's loader looks. It also adds that
    folder to `PATH` so `openxr_loader.dll` is found.
-5. **Starts Echo.** That's `echovr_openxr.exe` by default, or `--exe <name>` for
+7. **Starts Echo.** That's `echovr_openxr.exe` by default, or `--exe <name>` for
    another executable in the same folder. Any other arguments are passed to Echo.
-6. **Starts hand tracking**, if `EchoXR\echoxr.ini` has `AutoStartHands = 1` (the
-   installer asks; without an ini, the launcher creates one with `1`). It runs `EchoXR\Hands\EchoXRHands.exe --print` in its own
-   minimised console for as long as Echo runs, restarts it if it exits (at most 20
-   times, 5 seconds apart), and closes it when Echo exits. If the bridge is already
-   running, the launcher leaves it alone.
+   It waits until Echo exits.
 
 The environment settings apply only to the Echo process the launcher starts;
 nothing system-wide is changed. It logs to `bin\win10\EchoXR\launcher.log`.
@@ -93,7 +89,7 @@ nothing system-wide is changed. It logs to `bin\win10\EchoXR\launcher.log`.
    it. It doesn't have to be set as the system OpenXR runtime; the launcher picks
    SteamVR for each launch on its own.
 2. **Unzip the release** into the Echo install's `bin\win10` folder, so that
-   `EchoXR.exe` sits next to `echovr.exe`, or run `EchoXRSetup.exe`.
+   `EchoXR.exe` sits next to `echovr.exe`.
 3. **Run** `bin\win10\EchoXR.exe` with SteamVR running.
 
 The Oculus login/platform side is separate from all of this. Echo's online
@@ -104,42 +100,23 @@ with any other launch.
 
 ## Building
 
-Everything builds with MSVC (Visual Studio 2026 toolset) from `build_xr.bat`.
+See "Building" in [docs/ADVANCED.md](../docs/ADVANCED.md): one CMake build, with MSVC on
+Windows or clang-cl on macOS and Linux. Its inputs:
 
-Inputs, all fetched as source. The three checkouts aren't in this repository (they're
-in `.gitignore`); these are the exact commits the build uses:
-
-| Folder | What | Source | Commit |
-| --- | --- | --- | --- |
-| `Revive/` | Revive (MIT), with its submodules, plus `patches/revive-echoxr.patch` | github.com/LibreVR/Revive | `ab73167` |
-| `ovr_sdk_pc/` | Oculus PC SDK **1.55** headers and shim sources | github.com/sparsebase/ovr_sdk_win | `4b1d6b7` |
-| `OpenXR-SDK/` | OpenXR SDK 1.1.63 | github.com/KhronosGroup/OpenXR-SDK | `f2448a8` |
-| `openxr-build/` | the OpenXR loader, built with CMake + Ninja | built from `OpenXR-SDK/` | — |
-
-From the `xr` folder:
-
-```
-git clone --recursive https://github.com/LibreVR/Revive Revive
-git -C Revive checkout ab73167e2380135aee9fe9f68874ec7dd2912cb0
-git -C Revive submodule update --init --recursive
-git -C Revive apply ../patches/revive-echoxr.patch
-git clone https://github.com/sparsebase/ovr_sdk_win ovr_sdk_pc
-git -C ovr_sdk_pc checkout 4b1d6b7e86077062e5de33dda7d77b5790202c4c
-git clone https://github.com/KhronosGroup/OpenXR-SDK OpenXR-SDK
-git -C OpenXR-SDK checkout f2448a8797c85814aa892efc1ab8707900fbcc78
-```
-
-`patches/revive-echoxr.patch` holds the SteamVR changes described below, plus
-the `runtime.log` hook in `Common.h`.
+| What | Where | Pinned at |
+| --- | --- | --- |
+| Revive's OpenXR backend (MIT), with EchoXR's changes | `xr/revive/`, in this repository | upstream `ab73167` |
+| Oculus PC SDK **1.55** headers and two shim sources (build time only) | github.com/sparsebase/ovr_sdk_win | `4b1d6b7` |
+| OpenXR SDK 1.1.63 and its loader | github.com/KhronosGroup/OpenXR-SDK | `f2448a8` |
+| Vulkan headers, microprofile (Revive's externals) | KhronosGroup/Vulkan-Headers, zeux/microprofile | Revive's submodule commits |
+| Microsoft Detours (MIT) | github.com/microsoft/Detours | `1dbd4ea` |
 
 The Oculus SDK has to be **1.55 or newer**. Echo asks for SDK minor version 55,
 and 1.43 is missing `ovrHmdColorDesc` and the separate audio-device error codes
 that Revive uses.
 
-`build_xr.bat` compiles ReviveXR's sources, with Revive's own `main.cpp` swapped
-for `src/xr_main.cpp`, into `out\LibOVRRT64_1.dll`, and copies
-`openxr_loader.dll` next to it. The launcher builds from `src/launcher.cpp` into
-`out\EchoXR.exe` (`build_launcher.bat`, which `build_xr.bat` calls).
+The runtime is ReviveXR's sources, with Revive's own `main.cpp` swapped for
+`src/xr_main.cpp`, built as `LibOVRRT64_1.dll`. The launcher is `src/launcher.cpp`.
 
 ### What `src/xr_main.cpp` replaces
 
@@ -155,7 +132,7 @@ writes `EchoXR\runtime.log` (see below).
 
 Revive had mostly been used with Oculus-style runtimes. SteamVR rejected three
 things. Each was found from `runtime.log`, which names the exact OpenXR call that
-failed, and fixed in this copy of Revive:
+failed, and fixed in this copy of Revive (`xr/revive/`):
 
 1. **OpenXR version.** Built against the 1.1 SDK, Revive asked for OpenXR 1.1.
    The runtime refused (`XR_ERROR_API_VERSION_UNSUPPORTED`), which Echo reported
@@ -190,12 +167,103 @@ the whole session.
 
 ---
 
+## Changes in 0.5.0 (the event builds)
+
+Tested on Linux (Monado's simulated headset, GE-Proton11-3) with each build's own game server
+on the classic lobbies (EchoRelay): menu, PLAY, lobby.
+
+- **A table of game builds (`src/echoxr_common.h`).** `EchoXR.exe` finds the build by its
+  exe's PE timestamp and patches its copy for that build: the live build, Halloween 2017,
+  Christmas 2017 (`EchoArena.exe`), Halloween 2018, Christmas 2018 and Summer 2019. A build it
+  doesn't know is refused; a copy made from another build is made again.
+- **The exe-name check.** The event builds before Summer 2019 set themselves up as Echo VR
+  only under their own exe names; as `echovr_openxr.exe` they booted as Lone Echo and sat on
+  its starfield. The copy skips that check.
+- **Arguments (`launcher.cpp`).** Quoted only when needed: the old builds quit on `"-flag"`.
+  The event builds start from the game folder, as their own launchers start them.
+- **D3D11 under Wine (`echoxr_policy.h`'s `GameApi`).** The event builds render with D3D11
+  (their exe imports `d3d11.dll`), so OpenXR gets the D3D11 extension, not the live build's
+  D3D12. WMR controller bindings are suggested alongside Touch.
+- **The Platform SDK stand-in.** Each build's `pnsovr.dll` signature check is patched by its
+  timestamp; `ovrKeyValuePair_make*` and `ovrID_FromString` are implemented.
+- **Halloween 2017** also needs NvrMissingTextures (an EchoLoader plugin the launcher installs):
+  its published package lacks about 160 textures its first global level loads, and the game
+  crashes on them with or without EchoXR.
+
+## Changes in 0.4.2 (no Meta at all)
+
+- **The Platform SDK (`platform/`).** Echo's `pnsovr.dll` signs in through Oculus'
+  Platform SDK, which EchoXR's runtime didn't cover: Meta's loader had to come from a
+  Windows PC or Meta's runtime package, needed the Oculus service (none under Proton), and
+  stopped Echo with "Failed to initialize the Oculus Platform SDK". EchoXR now brings its
+  own `EchoXR\LibOVRPlatform64_1.dll` (marshmallow-mia's, from NoOvrEchoVR_on_Linux):
+  `EchoXR.exe` already puts `EchoXR\` first on `PATH` and in `LIBOVR_DLL_DIR`, so the game
+  loads it there, and only when EchoXR starts it. It logs to `EchoXR\platform.log`.
+
+## Changes in 0.4.1 (GE-Proton)
+
+Tested with a Quest 3 on SteamVR 2.16.7 (Steam Link) and on WiVRn 26.9, under GE-Proton11-3:
+
+- **OpenXR's set-up (`EchoXR.exe`).** GE-Proton's wineopenxr writes OpenXR's Vulkan
+  extensions into `HKCU\Software\Wine\XR`, not `Wine\VR`. 0.4.0 looked only in `Wine\VR`
+  and stopped with exit code 5 although the runtime answered; 0.4.1 takes them from
+  `Wine\XR` and copies them into `Wine\VR` (`proton_vr.h`).
+- **The first swapchain image (`Swapchain.cpp`).** wineopenxr (D3D12) knows a swapchain's
+  image count only after its images are enumerated, and refuses an acquire before that
+  (`XR_ERROR_CALL_ORDER_INVALID`): Echo stopped with "Unknown error while loading the
+  game". The count is asked for before the first acquire now.
+
+## Changes for Proton, and for every runtime (0.4.0)
+
+Comparing this runtime with [RiftLift](https://github.com/Villagers654/RiftLift)'s (also
+derived from Revive) showed where Revive's 2023 backend would break under Proton and on
+other runtimes. Each fix below is EchoXR's own code; RiftLift (GPL-3.0) is credited for
+the findings. The decisions that can be tested away from a headset live in
+`src/echoxr_policy.h`, with tests in `tests/`.
+
+1. **One graphics API under Proton.** Proton's wineopenxr turns each D3D11, D3D12 and
+   Vulkan request into `XR_KHR_vulkan_enable`, so Revive's request named it three
+   times, which SteamVR refuses. Under Wine only D3D12 is enabled, the API Echo renders
+   with (its `echovr.exe` builds a D3D12 device), and the adapter comes from the D3D12
+   requirements (`Runtime.cpp`, `Session.cpp`). A D3D11 game gets a clear error there.
+2. **The field-of-view probe** (`Session.cpp`, `ProbeViews`). Echo asks for its render
+   sizes before it hands over its device, so a short-lived session reads the field of
+   view first. It now uses no device at all where the runtime offers
+   `XR_MND_headless`. Otherwise it uses a temporary device of the game's own API (D3D12
+   under Proton, so wineopenxr never sees two graphics APIs on one instance), on the
+   runtime's adapter or else the first one (Revive passed a null adapter). It waits for
+   READY on every runtime, for at most 10 s, and then fails with a log line instead of
+   reading views from a session that isn't running.
+3. **The first frame.** Revive began a frame on whichever thread polled the session
+   status, which races the game's own frame calls on its render thread. Now the
+   eye-level origin is recentered after the game's first `xrWaitFrame`, and a game that
+   only calls `ovr_SubmitFrame` gets its first frame opened there (`Session.cpp`,
+   `REV_CAPI.cpp`).
+4. **Swapchain formats.** D3D12 swapchains were created with the game's format even when
+   the runtime didn't offer it (Revive negotiated a format, then didn't use it). D24S8
+   depth becomes D32S8 when the runtime lacks it, as on AMD GPUs through Proton
+   (`Swapchain.cpp`, `SwapchainD3D12.cpp`).
+5. **Opaque eye layers**, as on Oculus's compositor; quads, cylinders and cubes keep
+   their alpha (`REV_CAPI.cpp`).
+6. **Input.** Reading input or tracking syncs the actions again when the last sync is
+   more than 5 ms old, so controllers aren't untracked before the first frame, and one
+   lock covers every action call, since Echo reads from several threads
+   (`InputManager.cpp`).
+7. **Audio.** The microphone query answered with the speakers; endpoint properties are
+   read safely and freed (`REV_CAPI_Audio.cpp`).
+8. **Results and smaller bugs.** Starting a session is checked on every graphics path,
+   `ovr_Create` cleans up after a failed setup, `ovr_Destroy` accepts null, the tracking
+   caps report Position, and missing `return`s in the Vulkan and audio paths are back.
+
+---
+
 ## Logs
 
 | Log | What's in it |
 | --- | --- |
-| `bin\win10\EchoXR\launcher.log` | which runtime was chosen, what was launched, Echo's exit code |
-| `bin\win10\EchoXR\runtime.log` | the OpenXR runtime's name and version, enabled extensions, the SDK version Echo asked for, the controller profile bound to each hand, and **every failed OpenXR call** with its source line |
+| `bin\win10\EchoXR\launcher.log` | every launch (dated, kept up to about 1 MB): which runtime was chosen, Proton's OpenXR setup, the runtime and headset found, what was launched, Echo's exit code |
+| `bin\win10\EchoXR\platform.log` | the Platform SDK stand-in: the identity's source and ids, and every call `pnsovr.dll` made |
+| `bin\win10\EchoXR\runtime.log` | the latest launch: Windows or Wine, the OpenXR runtime's name and version, enabled extensions (and any required one missing), the SDK version Echo asked for, the field-of-view probe, session states, swapchain format changes, the first submitted frame, the controller profile bound to each hand, and **every failed OpenXR call** with its source line |
 | `_local\r14logs\*.log` | Echo's own log ("Initializing OVR session…" and any session error) |
 | `Steam\logs\vrserver.txt` | SteamVR's side of the connection |
 
@@ -203,7 +271,11 @@ the whole session.
 
 ## Credits and licences
 
+- **Platform SDK stand-in** (`platform/`) — marshmallow-mia, first written for
+  NoOvrEchoVR_on_Linux.
 - **Revive / ReviveXR** — LibreVR, MIT License.
 - **OpenXR SDK and loader** — The Khronos Group, Apache 2.0.
 - **Oculus PC SDK headers** — Oculus/Meta. Used at build time only.
 - **Microsoft Detours** — MIT License. Used by ReviveXR's D3D code.
+- **RiftLift** — Villagers654, GPL-3.0. No code is used; its findings shaped the 0.4.0
+  fixes above.
